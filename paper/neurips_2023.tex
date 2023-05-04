@@ -1,0 +1,598 @@
+\documentclass{article}
+
+
+% if you need to pass options to natbib, use, e.g.:
+%     \PassOptionsToPackage{numbers, compress}{natbib}
+% before loading neurips_2023
+
+
+% ready for submission
+\usepackage{neurips_2023}
+
+
+% to compile a preprint version, e.g., for submission to arXiv, add add the
+% [preprint] option:
+%     \usepackage[preprint]{neurips_2023}
+
+
+% to compile a camera-ready version, add the [final] option, e.g.:
+%     \usepackage[final]{neurips_2023}
+
+
+% to avoid loading the natbib package, add option nonatbib:
+%    \usepackage[nonatbib]{neurips_2023}
+
+
+\usepackage[utf8]{inputenc} % allow utf-8 input
+\usepackage[T1]{fontenc}    % use 8-bit T1 fonts
+\usepackage{hyperref}       % hyperlinks
+\usepackage{url}            % simple URL typesetting
+\usepackage{booktabs}       % professional-quality tables
+\usepackage{amsfonts}       % blackboard math symbols
+\usepackage{nicefrac}       % compact symbols for 1/2, etc.
+\usepackage{microtype}      % microtypography
+\usepackage{xcolor}         % colors
+
+
+\newcommand*\xor{\oplus}
+
+
+\title{Codeword Diffusion Models}
+
+% eparate the names and addresses of multiple authors: \And and \AND.
+
+\author{%
+  David S.~Hippocampus\thanks{Use footnote for providing further information
+    about author (webpage, alternative address)---\emph{not} for acknowledging
+    funding agencies.} \\
+  Department of Computer Science\\
+  Cranberry-Lemon University\\
+  Pittsburgh, PA 15213 \\
+  \texttt{hippo@cs.cranberry-lemon.edu} \\
+}
+
+
+\begin{document}
+
+\maketitle
+
+
+\begin{abstract}
+Diffusion probabilistic models (DPMs) are a class of generative model which work by learning to reverse a gradual data corruption process, called a diffusion process by analogy with physical diffusion processes.
+Applying DPMs to the generation of discrete or symbolic data, such as text, requires defining a diffusion process over the discrete data domain, either by defining discrete transition probabilities between symbols or by mapping the data onto a continuous representation and applying a continuous diffusion process. 
+This work describes an approach which keeps the intermediate data representation fully discrete but allows for a more gradual, diffusion like, data corruption process than is possible using transitions between observable symbols.
+The method is dubbed codeword diffusion because it combines  diffusion probabilistic models with a channel coding transformation in which input symbols are transformed to specially selected codewords.
+Although error correcting codes may be employed for the codewords, selected codes need not be error correcting nor even error detecting in order to yield enhanced discrete diffusion model performance. 
+\end{abstract}
+
+
+\section{Introduction}
+
+The current state of the art generative models for discrete data, such as text, are autoregressive models which generate serialized representations of the objects generated one symbol at a time conditioned on previously generated symbols. This approach works well for generating naturally sequential and discrete data, such as text. But because the model must be rerun to generate each token individually generating very long sequences can become computationally burdensome. Likewise if the data to be generated is non-sequential or continuous in nature, such as is the case with images, then the strictly sequential generation ordering of autoregressive models may become problematic. Autoregressive models generating high quality quality samples from such domains usually employ specialized sub-model to reversibly transform between the image domain and a consistently serialized sequence of discrete symbols \citep{ramesh2021, lee2022} . 
+
+A much more natural fit for the generation of non-sequential and continuous data are diffusion probabilistic models \cite{sohl-dickstein15}.
+Diffusion based models have recently achieved state of the art performance in image generation \citep{ho2020, song2021, saharia2022, ramesh2022}. 
+Diffusion models work by making progressive refinements of a generated sample, starting from a fixed noise distribution. 
+
+The progressive updating of diffusion models allows for more natural handling of non-sequential relationships since the iterative updates at each time step have access to the entire corrupted sample at each time point and there is no need to condition on only specific parts of the data. 
+This ability of diffusion models to make progressive updates is also very attractive with respect to textual generation or other forms of discrete data. For example consider a text generation system trained on two different sorts of text. Both texts describe the moves in a Chess game. One text has a header which lists the total number of moves in the game at the very beginning and the other file is identical but lists the number of moves at the end. Diffusion like models would have the same amount of difficulty in generating either game format, since it is equally easy to communicate information forward or backward within the textual sequence.
+Whereas these two different formats present a very different kind of challenge to a fully autoregressive model. If the game length is presented at the end then the autoregressive model can learn to predict a plausible sequence of moves and count them up at the end (or rather predict the text of the move count conditioned on the game). This seems like a relatively natural way to go about generating believable samples of chess games. But if the number of moves is instead at the beginning of the text then the system must not only predict a sequence of plausible moves but must also condition those moves such that checkmate is achieved in precisely the right number of steps. In other words the system must effectively already have an idea of how the game is going to ultimately play out before the first move is even made. 
+
+For a human it would seem that the task 'play a realistic game of chess and then count the number of moves' is a much easier task than 'play a realistic game of chess consisting of exactly N moves'. So we might expect that an autoregressive model would have a much harder time with the format in which game length is specified first than when it is specified at the end. However it could easily be the case that the additional conditioning information could very well yield superior apparent sample quality, especially when the number of available training examples becomes very large.
+% analogously to how image label conditioning tends to improve the quality of generated images.   
+However we should be wary of the implicit biases of models which can, metaphorically speaking, only think in a straight line. For example a decision transformer \cite{chen2021decision} pre-trained on text where the number of moves in the game is at the beginning would implicitly sometimes be conditioned to attempt to lose the game instead of win depending on whether or not the initially generated number of moves was even or odd.
+
+Additionally codeword based diffusion models may provide a superior way to deal with categorical predictions over extremely large vocabularies. Dense prediction heads with softmax activations become very costly in terms of numbers of parameters, amount of computation, and memory as the size of the target vocabulary increases. Categorical prediction can be done much more parameter and compute efficiently by instead predicting the digits of the binary expansion of the category index. However the interpretation of all of the bits relies on the values of the ones that came before in the index. Better predictive performance can be gotten by hierarchically predicting each bit conditioned on the previously predicted bits. In practice instead of predicting all the way down at the level of bits it is useful to make predictions over hierarchical word clusters \cite{pmlr-vR5-morin05a}. The cluster hierarchy however is likely to be somewhat arbitrary and managing this hierarchy adds significant additional code and model structure complexity. 
+
+In codeword diffusion large vocabularies can be represented using only a logarithmic number of bits plus some small encoding overhead. Because the diffusion updates are intended to be run over several iterations any hierarchy of dependencies between bits may be learned without the need for any explicit hierarchy to be hardcoded into the model. Thus we can achieve the parsimony of hierarchical encoding schemes without requiring explicit management of these hierarchies with a lessened risk of poor inductive biases caused by bad hierarchy choices. 
+
+\section{Method}
+
+\subsection{Notation}
+In this paper $x$ will be used to denote data drawn from an appropriate target natural data distribution denoted by $q(x)$.
+Where appropriate $q(x | )$ will also denote the 
+The action of a stochastically applying a noising diffusion process for $t$ time steps 
+
+superscript $x^t$ and the absence of a superscript is to be interpreted as being the same as the use of a superscript equal to 0. $q(x^{t} | x^{t-1})$ seeded with initial data $x^{0}$ drawn from a natural data distribution $q(x^{0})$. The superscripts indicate either a continuous or discrete time index ranging from 0 to $T$. A time value of 0 may be indicated by the absence of a superscript $x = x^{0}$.  
+When necessary subscripts may be added to indicate a particular sample identifier, sub-sequence index, and bit index or channel dimension index with subscripts appearing in that order.  So for example $x^{t}_{i,j}$ would represent the value contained at the $j$th position of a sequence generated after $t$ steps of a diffusion process applied to data example $i$. If the data type of the sequence was vector valued then $x_{i,j}$ would represent a vector and $x_{i,j,k}$ would represent the value in the $k$th entry of that vector. If $x$ is integer valued then $x_{i,j,k}$ is understood to represent the 
+
+\subsection{Diffusion Models} 
+
+Diffusion probabilistic models \citep{sohl-dickstein15} attempt to create models which slowly change pure noise samples into samples which approximate those drawn from a target distribution. This differs from GANs or VAEs which attempt to learn to turn noise into data samples in a single pass. Designing a process which iteratively turns noise into samples from a target distribution may be hard. Diffusion models leverage the fact that processes which go the other way and which turn data samples into pure noise are very easy to design. One simply progressively injects noise into samples drawn from the target distribution. 
+
+The diffusion process starts by sampling a point $x^0$ from the target distribution $q(x^0)$ and at each time step a new sample $x^{t+1}$ is drawn from a distribution conditioned on the previous point in the sequence $q(x^{t+1} | q^{t}, \beta(t))$ where $\beta(t)$ is a parameter controlling how much noise is injected at each diffusion step (for example the variance of a Gaussian noise distribution, or the bit flip rate of a binomial distribution).
+
+Diffusion models work by learning to mimic drawing samples from the distribution of the reverse process $q(x^{t-1} | x^t, \beta(t)) \approx f_\theta(x^t)$. The function $f_\theta$ may be parameterized in any convenient manner and is typically a deep neural network trained via gradient descent. Pairs of samples $x^{t}$ and $x^{t+1}$ can be easily drawn from the forward diffusion process and then used to train $f_\theta(x^t)$ to learn the approximate mean of the reverse diffusion step.
+
+Although this approach of using adjacent samples to create training targets can work, the network learns to mimic a distribution of updates drawn from a slow and meandering diffusion process. So, if the reverse process faithfully copies the distribution of the forward process, will also be slow and meandering. 
+An excellent solution to this difficulty is to directly sample from the posterior of the process \cite{ho2020, song2021} in which it was realized that instead of training on pairs $x^{t-1}$, $x^{t}$ it is possible to train on pairs $x^{0}$, $x^{t}$. For certain choices of diffusion noise distribution it is possible to directly sample from the conditional distribution $p(x^t | x^0)$ without needing to carry out the intermediate diffusion steps.
+
+
+where it was realized that for certain choices of diffusive noise distributions it is possible to directly calculate the distribution of $x^t$ corresponding to a particular initial point $x^0$ for any time $t$ without actually carrying out the intermediate diffusion process steps. Using this distribution one can calculate the approximate distribution of $x^{t-1}$ conditioned on $x^t$
+
+in some situations drawing samples from the entire diffusion process is unnecessary drawing just a single sample $x^t$ from a diffusion path each time can yield superior training data. For sufficiently simple diffusion processes it becomes possible to calculate the distribution of the diffusion process for any time step $t$ given any initial sample $x^0$. 
+
+An excellent solution to this problem, is to instead learn from samples drawn from probability distributions conditioned on both the current data diffusion trajectory sample $x^t$ as well as the initial data sample that acted as the seed for that trajectory $x^0$. 
+
+
+\begin{equation}\label{marginal_q}
+  q(x^{(t-1)}|x^{(t)}) = \int q(x^{(t)} | x^{(t-1)}) p(^{(t-1)}) dx^{(t-1)}
+\end{equation}
+
+\subsection{Binary Codeword Diffusion}
+
+Binary codeword diffusion models (BCDMs) are discrete probabilistic diffusion models in which the diffusion process corrupts bits in a binary representation of discrete data in a manner similar to the binomial diffusion of \cite{sohl-dickstein15}. However, the input data is not assumed to initially consist of binary or binomial basic variables. Instead the basic symbols of an input sequence are first mapped one-to-one onto a chosen set of encoding integers, called codewords. 
+Because the symbol to codeword transformation is treated as a preprocessing step for the purposes of the diffusion model we will denote the codeword transformed inputs by $x$ and when necessary we will denote the raw input symbols indexes by $u$. Note that in general there will be no simple relationship between the bits of $x$ and the bits of $u$ and the number of bits used to encode $x^t_{i,j}$ will usually be larger than the number of bits used to encode the symbol indexes $u_{i,j}$.
+
+\subsubsection{Codeword Selection}
+
+The choice of mapping of symbol to codewords may be arbitrary, subject only to the constraint that each unique input symbol is mapped to a unique codeword. An algorithmic decoder which inverts this process and turns arbitrary messages back into valid code words is not strictly necessary, since a well trained diffusion model should do this automatically as part of the generation process. However the use of a decoding scheme for the chosen codeword transformation may improve predictive performance in practice. 
+
+We call the total number of bits which are necessary to represent the codes in the codebook the total bit width of the code. 
+For implementation purposes we will explore only codes for which the total required encoding bits can be represented by a int32. Furthermore for ease of implementation the sign bit has been left unused in the experiments in this paper and so we consider only codes of total bit width 31 and less. 
+
+For this work codes with a relatively small number of bits are chosen by simply randomly generating a small lookup table, called the codebook, of unique integers less than $2^k$. Mapping to codewords is done by indexing into the codeword table and decoding is done by indexing into a lookup table which enumerates the nearest codeword for every integer less than $2^k$. This technique allows easy experimentation with any choice of codebook without requiring a known algorithmic decoder. This technique works well for codes with a small number of bits but is burdensome when dealing with codes with millions of possible codewords. For this purpose when dealing with a large input vocabulary a compound block code is generated. To encode each input symbol index is first split into a multi-index with sub indexes within the range of the number of codewords used to encode each block. These sub indexes are then encoded and the binary representations of the resulting codewords concatenated. Decoding is done by decoding each block of bits to get the relevant sub indexes and then recombining them into the flat input symbol index. 
+
+A case of special interest is the transformation of unicode codepoints into binary codewords for the purposes of applying bitwise diffusion. There are $1,112,064=2^{11}*3*181$ valid unicode codepoints. Using the combined block code approach above one can split the unicode codepoint into two block codes with vocabulary size $2^{10}=1024$, and 2*3*181=1086 and then assign codewords with any number of bits greater than 10 to each block. Because of implementation considerations it has proven convenient to use int32 values for encoding and to leave the sign bit unused. This yields 31 encoding bits to split between the two blocks and it makes sense to assign 15 bits to the block code with 1,024 codewords and 16 bits to the block code with 1,086 codewords. 
+
+%There are many reasonable ways in which to define a consistent diffusion process over this space. Perhaps the most intuitive is to simply pick some small possibly time dependent bit flip rate $\beta(t)$ and then to randomly toggle the value of each bit in a small time step $dt$ with probability $\beta(t)dt$. As $\int \beta(t)dt$  becomes large this diffusion process will converge towards an uncorrelated binomial distribution. However for small and intermediate times the parity of $\int \beta(t)dt$ is a good predictor of $\eps^{(t)}$, which is an undesirable learning signal. Moreover efficiently sampling from such a distribution at any given time $t$ without simulating intermediate time steps is somewhat non-trivial. 
+
+\subsubsection{Diffusion Noise Sampling}
+
+It is desirable to choose a diffusion process for which we can quickly sample from the posterior distribution for any time $t$ conditioned on a data point $x^{0}$ without carrying out any intervening diffusion steps. Let $\beta(t)$ be a function which is proportional to the corruption rate at a time $t$ and the total probability of corruption is given in equation \ref{noise2gamma}. The function $\gamma(t)$ represents the average fraction of uncorrupted data remaining.
+
+\begin{equation}\label{noise2gamma}
+  1-\gamma(t) = \frac{\int_0^t \beta(t) dt}{\int_0^T \beta(t) dt}
+\end{equation}
+
+Once a bit is corrupted its value is replaced by a value drawn from a noise distribution. Any probability distribution over 0 and 1 is permissible including deterministically picking 0 or 1. To sample directly from the posterior of this process we first draw a time uniformly from the interval 0 to $T$, $t ~ \mathcal{u}(0, T)$ then use the function $\gamma(t)$ to determine a fraction of bits to corrupt. Note that corrupting a bit may or may not cause the value of that bit to change. Samples drawn from the noise distribution may happen to have the same value as the bits that they are corrupting in which case the corruption action has no observable effect. 
+
+Once a sample $x^t \sim q(x^t | x^0, t)$ has been drawn the target corruption noise may be evaluated by applying a bitwise exclusive OR operation which we denote by the symbol $\xor$.
+
+\begin{equation}
+  \epsilon^t = x^0 \xor x^t
+\end{equation}
+
+Either of $\epsilon^t$ or $x^0$ may then be used as the prediction target for a denoising model, for this work we have chosen to predict the corrupting noise.
+
+\subsubsection{Denoising Model}
+
+A denoising model $f(x^t, t, \theta)$ can be trained using samples of $x^t$, $\epsilon^t$. 
+
+\begin{equation}\label{denoiseapprox}
+  f_{i,j,k}(x^t, t, \theta) \approx p(x_{i,j,k}^0 \xor x_{i,j,k}^t) = p(\epsilon_{i,j,k}^t)
+\end{equation}
+
+he specific meaning of the approximation in equation \ref{denoiseapprox} can be made explicit by a choice of loss function to minimize, for this work we use binary cross entropy. 
+Note that in contrast to the usual matter of affairs when training diffusion models it is most convenient to think of the inputs of the denoising model and the output of the denoising model as representing different kinds of values. The inputs $x^t_{i,j}$ should be treated as a sequence of a special kind of high cardinality categorical variable and the outputs targets is a conditional probability estimate for a set of Bernoulli variables the number of which is equal to the total encoding bit width of the chosen codewords.
+
+The $\xor$ operation is its own inverse so a full size denoising step can be carried out by drawing a sample $\hat{\epsilon}^t$ from the estimated noise distribution and then calculating $\hat{\epsilon}^t \xor x^t = \hat{x}^0$. However this does not take full advantage of the incremental nature of the diffusion process. To mimic the incremental action of the diffusion process in reverse we must make updates only to a small fraction of the bits at each update step.  To turn the current sample estimate $\hat{x}^t$ into an estimate for a sample from a short time earlier $\hat{x}^{t-\delta}$ the noise estimate $\hat{\epsilon^t}$ is first gated by a stochastic gating function $g(\gamma(t))$ to control the incremental rate of corrections as in equation \ref{gatedupdate}. 
+
+The gating function $g$ could be made to mimic the derivative of the function $\gamma(t)$ however the definition of the diffusion process depending on $\gamma(t)$ assumes that each bit need be flipped at a maximum only once during a diffusion process, which would require an extremely accurate denoising model to achieve. There are many possible diffusion processes which would share the same posterior distribution $q(x^t | x^0, t)$ but for which individual bits flip many times prior to the observation time over the course of the diffusion. The design of the gating function $g$ allows us to ease the requirement on the prediction accuracy of the denoising model and choose the update fraction schedule as a function of the current data fidelity in terms of $\gamma(t)$.
+
+One intuitive candidate for the gating function is $g(\gamma(t)) \sim {\rm Bernoulli}(\gamma(t))$ in which the fraction of allowed updates is simply proportional to the current estimate of the uncorrupted data fraction. At an intuitive level this would slowly increase the fraction of bits that can be corrected at the same rate implied by the diffusion process. If the estimated corruption for each bit at each step is always high probability and stable over time then each bit is flipped on average only once and in accord with a schedule that directly mimics the diffusion schedule implied by $\gamma(t)$. If on the other hand the denoising model remains uncertain of the current corrupting noise then the model is allowed to continue to repeatedly flip any bits for which the uncertainty remains high, all the way to the final update in which lets through the full maximum likelihood or sampled update.
+
+The linear gating function however allows only a tiny fraction of bits to be updated early on in the sampling process. 
+Another strong candidate gating function is $g(\gamma(t)) \sim {\rm Bernoulli}(\sqrt{\gamma(t)})$ by analogy with update rules for continuous diffusion processes. 
+This gating function allows updating of a greater fraction of bits early in the sampling process before becoming linear in $\gamma(t)$ close to the end of the sampling process when the amount of conditioning information is greatest. 
+
+
+\begin{equation}\label{samplenoise}
+  \hat{\epsilon} \sim f_\theta(x^t, t)
+\end{equation}
+
+\begin{equation}\label{gatedupdate}
+  \hat{x}^{t-\delta} = \hat{x}^t \xor (g(\gamma(t)) * f_\theta(x^t, t, \theta))
+\end{equation}
+
+
+\subsubsection{Circular Shift Embeddings}
+
+The denoising model input data $x^t$ may represent any integer up to $2^k$ where k is the total bit width of the chosen codewords. If k is small then we may easily use the standard methods for categorical inputs by use of a learned vector embedding table lookup as an input layer for the denoising network. However since we will be considering models where this implies a categorical vocabulary of a cardinality as high as $2^{31}$ a direct embedding lookup will not always be feasible. 
+
+To address this issue we propose the use of a circular bit shift embeddings. In a circular bit shift embedding blocks of $m$ bits from $x$ are used as the index into a collection of learned embedding lookups, one for each shift selected by the practitioner. The lookup indexes are calculated by carrying out circular bit shift operations to put the desired block of bits into the lowest order positions and the integer value corresponding to those bits are read off by a modulus operation. Each encoding bit may optionally participate in multiple different blocks and lookups. A circular bit shift operation is used instead of right shifting so that the least and most significant bits can both participate in as many contiguous blocks of bits as the interior encoding bits. 
+This method provides a much higher rank representation of the individual bit values than simply treating them as linear inputs while also keeping the total parameter and memory cost low even for very high cardinality inputs.
+
+For example consider a CBE where the total encoding bit width is $k=5$ and we have chosen a sub encoding bit width $m=3$ and we choose to use circular shifts of 0, 2, and 4. The first three bits would be used as an index of an embedding lookup table of size $2^m=8$ the third through 5 bits would be used as the index to a second lookup embedding of the same size and the third shift of 4 would result in a wrap around so that the last bit and the first 2 bits would be combined into an index for a third lookup. In this scenario each bit participates in exactly 2 indexing blocks and so has equal impact on the output representation vectors. 
+
+
+
+This provides a concept of gradual diffusion processes in a discrete space in a manner analogous to that of \cite{austin2021} except the target categoricals are never handled explicitly by either the model inputs or outputs. 
+
+
+categories fed to the model may have a many-to-one relationship with the target space categoricals used to encode the data. Additionally models do not take the target categoricals as inputs nor predict them as outputs. Instead 
+
+he analog bit diffusion of \citet{chen2023analog} and 
+A generative model for discrete objects must make design choices about the serialization, tokenization, and representation used for modeling. Of these only the choice of  The method of object serialization, that is the method used to turn objects into files or vice versa, is not often considered directly as part of the generative modeling process. After all it usually would not materially affect generative performance if images were saved in bmp, jpeg, or png format. 
+
+
+\section{Experiments}
+
+\begin{table}
+  \caption{Sample table title}
+  %\label{sample-table}
+  \centering
+  \begin{tabular}{lll}
+    \toprule
+    \multicolumn{2}{c}{Part}                   \\
+    \cmidrule(r){1-2}
+    Name     & Description     & Size ($\mu$m) \\
+    \midrule
+    Dendrite & Input terminal  & $\sim$100     \\
+    Axon     & Output terminal & $\sim$10      \\
+    Soma     & Cell body       & up to $10^6$  \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+
+\section{Related Work}
+
+\subsection{Relation to Analog Bit Diffusion}
+
+The proposed method is strongly similar to the method of analog bit diffusion proposed by \cite{chen2023analog}. In the method of analog bits each bit in a binary data representation is promoted to a floating point value and continuous diffusion with a Gaussian diffusion process is applied. In \cite{chen2023analog} other binary representations than the default ascii byte representation were considered; gray, random, and one-hot. From the perspective of this work the gray and random binary encodings consist of the same codebook as the usual dense ascii encoding and so differ only in the way in which input symbols are mapped to codewords not in the choice of code itself. While the one-hot encoding does correspond to a   technically a valid codebook its capacity is so small it would not usually be considered in the same type of encoding as the codes considered in this work.    
+Any codeword transformation pre processing step is consistent with analog bit diffusion. 
+
+\subsection{Relationship to Structured Diffusion}
+
+Codeword diffusion can be seen as a kind of generalization of the structured diffusion of \cite{austin2021}. In the structured diffusion approach the data is encoded as a sequence of categorical variables and the diffusion process is defined in terms of probabilistic transitions between the implied categories.  In that approach the target prediction categories for denoising and the possible input categories were selected to be drawn largely from the same possible vocabulary. One exception was a special mask token which was allowed to be used for noise transitions but which may not be a valid target category. 
+
+Mathematically the present work is consistent with a special kind of structured diffusion in which the space of possible categories over which diffusion may occur is much larger than the space of possible target categories. The explicit transition probability matrices between these categories implied by the bit corruption process would be in many cases too large to evaluate explicitly and so a direct implementation of codeword diffusion using the techniques of \cite{austin2021} may not be feasible in the general case however the mathematical insights which can be gleaned from this correspondence may be worth pursuing. 
+
+\section{Conclusion}
+
+
+\subsection{Retrieval of style files}
+
+
+The \LaTeX{} style file contains three optional arguments: \verb+final+, which
+creates a camera-ready copy, \verb+preprint+, which creates a preprint for
+submission to, e.g., arXiv, and \verb+nonatbib+, which will not load the
+\verb+natbib+ package for you in case of package clash.
+
+
+\paragraph{Preprint option}
+If you wish to post a preprint of your work online, e.g., on arXiv, using the
+NeurIPS style, please use the \verb+preprint+ option. This will create a
+nonanonymized version of your work with the text ``Preprint. Work in progress.''
+in the footer. This version may be distributed as you see fit, as long as you do not say which conference it was submitted to. Please \textbf{do
+  not} use the \verb+final+ option, which should \textbf{only} be used for
+papers accepted to NeurIPS. 
+
+
+At submission time, please omit the \verb+final+ and \verb+preprint+
+options. This will anonymize your submission and add line numbers to aid
+review. Please do \emph{not} refer to these line numbers in your paper as they
+will be removed during generation of camera-ready copies.
+
+
+The file \verb+neurips_2023.tex+ may be used as a ``shell'' for writing your
+paper. All you have to do is replace the author, title, abstract, and text of
+the paper with your own.
+
+
+The formatting instructions contained in these style files are summarized in
+Sections \ref{gen_inst}, \ref{headings}, and \ref{others} below.
+
+
+\section{General formatting instructions}
+\label{gen_inst}
+
+
+The text must be confined within a rectangle 5.5~inches (33~picas) wide and
+9~inches (54~picas) long. The left margin is 1.5~inch (9~picas).  Use 10~point
+type with a vertical spacing (leading) of 11~points.  Times New Roman is the
+preferred typeface throughout, and will be selected for you by default.
+Paragraphs are separated by \nicefrac{1}{2}~line space (5.5 points), with no
+indentation.
+
+
+The paper title should be 17~point, initial caps/lower case, bold, centered
+between two horizontal rules. The top rule should be 4~points thick and the
+bottom rule should be 1~point thick. Allow \nicefrac{1}{4}~inch space above and
+below the title to rules. All pages should start at 1~inch (6~picas) from the
+top of the page.
+
+
+For the final version, authors' names are set in boldface, and each name is
+centered above the corresponding address. The lead author's name is to be listed
+first (left-most), and the co-authors' names (if different address) are set to
+follow. If there is only one co-author, list both author and co-author side by
+side.
+
+
+Please pay special attention to the instructions in Section \ref{others}
+regarding figures, tables, acknowledgments, and references.
+
+
+\section{Headings: first level}
+\label{headings}
+
+
+All headings should be lower case (except for first word and proper nouns),
+flush left, and bold.
+
+
+First-level headings should be in 12-point type.
+
+
+\subsection{Headings: second level}
+
+
+Second-level headings should be in 10-point type.
+
+
+\subsubsection{Headings: third level}
+
+
+Third-level headings should be in 10-point type.
+
+
+\paragraph{Paragraphs}
+
+
+There is also a \verb+\paragraph+ command available, which sets the heading in
+bold, flush left, and inline with the text, with the heading followed by 1\,em
+of space.
+
+
+\section{Citations, figures, tables, references}
+\label{others}
+
+
+These instructions apply to everyone.
+
+
+\subsection{Citations within the text}
+
+
+The \verb+natbib+ package will be loaded for you by default.  Citations may be
+author/year or numeric, as long as you maintain internal consistency.  As to the
+format of the references themselves, any style is acceptable as long as it is
+used consistently.
+
+
+The documentation for \verb+natbib+ may be found at
+\begin{center}
+  \url{http://mirrors.ctan.org/macros/latex/contrib/natbib/natnotes.pdf}
+\end{center}
+Of note is the command \verb+\citet+, which produces citations appropriate for
+use in inline text.  For example,
+\begin{verbatim}
+   \citet{hasselmo} investigated\dots
+\end{verbatim}
+produces
+\begin{quote}
+  Hasselmo, et al.\ (1995) investigated\dots
+\end{quote}
+
+
+If you wish to load the \verb+natbib+ package with options, you may add the
+following before loading the \verb+neurips_2023+ package:
+\begin{verbatim}
+   \PassOptionsToPackage{options}{natbib}
+\end{verbatim}
+
+
+If \verb+natbib+ clashes with another package you load, you can add the optional
+argument \verb+nonatbib+ when loading the style file:
+\begin{verbatim}
+   \usepackage[nonatbib]{neurips_2023}
+\end{verbatim}
+
+
+As submission is double blind, refer to your own published work in the third
+person. That is, use ``In the previous work of Jones et al.\ [4],'' not ``In our
+previous work [4].'' If you cite your other papers that are not widely available
+(e.g., a journal paper under review), use anonymous author names in the
+citation, e.g., an author of the form ``A.\ Anonymous'' and include a copy of the anonymized paper in the supplementary material.
+
+
+\subsection{Footnotes}
+
+
+Footnotes should be used sparingly.  If you do require a footnote, indicate
+footnotes with a number\footnote{Sample of the first footnote.} in the
+text. Place the footnotes at the bottom of the page on which they appear.
+Precede the footnote with a horizontal rule of 2~inches (12~picas).
+
+
+Note that footnotes are properly typeset \emph{after} punctuation
+marks.\footnote{As in this example.}
+
+
+\subsection{Figures}
+
+
+\begin{figure}
+  \centering
+  \fbox{\rule[-.5cm]{0cm}{4cm} \rule[-.5cm]{4cm}{0cm}}
+  \caption{Sample figure caption.}
+\end{figure}
+
+
+All artwork must be neat, clean, and legible. Lines should be dark enough for
+purposes of reproduction. The figure number and caption always appear after the
+figure. Place one line space before the figure caption and one line space after
+the figure. The figure caption should be lower case (except for first word and
+proper nouns); figures are numbered consecutively.
+
+
+You may use color figures.  However, it is best for the figure captions and the
+paper body to be legible if the paper is printed in either black/white or in
+color.
+
+
+\subsection{Tables}
+
+
+All tables must be centered, neat, clean and legible.  The table number and
+title always appear before the table.  See Table~\ref{sample-table}.
+
+
+Place one line space before the table title, one line space after the
+table title, and one line space after the table. The table title must
+be lower case (except for first word and proper nouns); tables are
+numbered consecutively.
+
+
+Note that publication-quality tables \emph{do not contain vertical rules.} We
+strongly suggest the use of the \verb+booktabs+ package, which allows for
+typesetting high-quality, professional tables:
+\begin{center}
+  \url{https://www.ctan.org/pkg/booktabs}
+\end{center}
+This package was used to typeset Table~\ref{sample-table}.
+
+
+\begin{table}
+  \caption{Sample table title}
+  \label{sample-table}
+  \centering
+  \begin{tabular}{lll}
+    \toprule
+    \multicolumn{2}{c}{Part}                   \\
+    \cmidrule(r){1-2}
+    Name     & Description     & Size ($\mu$m) \\
+    \midrule
+    Dendrite & Input terminal  & $\sim$100     \\
+    Axon     & Output terminal & $\sim$10      \\
+    Soma     & Cell body       & up to $10^6$  \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\subsection{Math}
+Note that display math in bare TeX commands will not create correct line numbers for submission. Please use LaTeX (or AMSTeX) commands for unnumbered display math. (You really shouldn't be using \$\$ anyway; see \url{https://tex.stackexchange.com/questions/503/why-is-preferable-to} and \url{https://tex.stackexchange.com/questions/40492/what-are-the-differences-between-align-equation-and-displaymath} for more information.)
+
+\subsection{Final instructions}
+
+Do not change any aspects of the formatting parameters in the style files.  In
+particular, do not modify the width or length of the rectangle the text should
+fit into, and do not change font sizes (except perhaps in the
+\textbf{References} section; see below). Please note that pages should be
+numbered.
+
+
+\section{Preparing PDF files}
+
+
+Please prepare submission files with paper size ``US Letter,'' and not, for
+example, ``A4.''
+
+
+Fonts were the main cause of problems in the past years. Your PDF file must only
+contain Type 1 or Embedded TrueType fonts. Here are a few instructions to
+achieve this.
+
+
+\begin{itemize}
+
+
+\item You should directly generate PDF files using \verb+pdflatex+.
+
+
+\item You can check which fonts a PDF files uses.  In Acrobat Reader, select the
+  menu Files$>$Document Properties$>$Fonts and select Show All Fonts. You can
+  also use the program \verb+pdffonts+ which comes with \verb+xpdf+ and is
+  available out-of-the-box on most Linux machines.
+
+
+\item \verb+xfig+ "patterned" shapes are implemented with bitmap fonts.  Use
+  "solid" shapes instead.
+
+
+\item The \verb+\bbold+ package almost always uses bitmap fonts.  You should use
+  the equivalent AMS Fonts:
+\begin{verbatim}
+   \usepackage{amsfonts}
+\end{verbatim}
+followed by, e.g., \verb+\mathbb{R}+, \verb+\mathbb{N}+, or \verb+\mathbb{C}+
+for $\mathbb{R}$, $\mathbb{N}$ or $\mathbb{C}$.  You can also use the following
+workaround for reals, natural and complex:
+\begin{verbatim}
+   \newcommand{\RR}{I\!\!R} %real numbers
+   \newcommand{\Nat}{I\!\!N} %natural numbers
+   \newcommand{\CC}{I\!\!\!\!C} %complex numbers
+\end{verbatim}
+Note that \verb+amsfonts+ is automatically loaded by the \verb+amssymb+ package.
+
+
+\end{itemize}
+
+
+If your file contains type 3 fonts or non embedded TrueType fonts, we will ask
+you to fix it.
+
+
+\subsection{Margins in \LaTeX{}}
+
+
+Most of the margin problems come from figures positioned by hand using
+\verb+\special+ or other commands. We suggest using the command
+\verb+\includegraphics+ from the \verb+graphicx+ package. Always specify the
+figure width as a multiple of the line width as in the example below:
+\begin{verbatim}
+   \usepackage[pdftex]{graphicx} ...
+   \includegraphics[width=0.8\linewidth]{myfile.pdf}
+\end{verbatim}
+See Section 4.4 in the graphics bundle documentation
+(\url{http://mirrors.ctan.org/macros/latex/required/graphics/grfguide.pdf})
+
+
+A number of width problems arise when \LaTeX{} cannot properly hyphenate a
+line. Please give LaTeX hyphenation hints using the \verb+\-+ command when
+necessary.
+
+
+\begin{ack}
+Use unnumbered first level headings for the acknowledgments. All acknowledgments
+go at the end of the paper before the list of references. Moreover, you are required to declare
+funding (financial activities supporting the submitted work) and competing interests (related financial activities outside the submitted work).
+More information about this disclosure can be found at: \url{https://neurips.cc/Conferences/2023/PaperInformation/FundingDisclosure}.
+
+
+Do {\bf not} include this section in the anonymized submission, only in the final paper. You can use the \texttt{ack} environment provided in the style file to autmoatically hide this section in the anonymized submission.
+\end{ack}
+
+
+
+\section{Supplementary Material}
+
+Authors may wish to optionally include extra information (complete proofs, additional experiments and plots) in the appendix. All such materials should be part of the supplemental material (submitted separately) and should NOT be included in the main submission.
+
+
+\section*{References}
+
+References follow the acknowledgments in the camera-ready paper. Use unnumbered first-level heading for
+the references. Any choice of citation style is acceptable as long as you are
+consistent. It is permissible to reduce the font size to \verb+small+ (9 point)
+when listing the references.
+Note that the Reference section does not count towards the page limit.
+\medskip
+
+
+{
+\small
+
+
+[1] Alexander, J.A.\ \& Mozer, M.C.\ (1995) Template-based algorithms for
+connectionist rule extraction. In G.\ Tesauro, D.S.\ Touretzky and T.K.\ Leen
+(eds.), {\it Advances in Neural Information Processing Systems 7},
+pp.\ 609--616. Cambridge, MA: MIT Press.
+
+
+[2] Bower, J.M.\ \& Beeman, D.\ (1995) {\it The Book of GENESIS: Exploring
+  Realistic Neural Models with the GEneral NEural SImulation System.}  New York:
+TELOS/Springer--Verlag.
+
+
+[3] Hasselmo, M.E., Schnell, E.\ \& Barkai, E.\ (1995) Dynamics of learning and
+recall at excitatory recurrent synapses and cholinergic modulation in rat
+hippocampal region CA3. {\it Journal of Neuroscience} {\bf 15}(7):5249-5262.
+}
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+
+\end{document}
