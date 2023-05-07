@@ -126,15 +126,15 @@ class GaussianDiffusion(object):
     
     def __init__(
         self,
-        noise_schedule,
+        schedule_fn,
         add_positions=True,
     ):
-        self.noise_schedule = noise_schedule
+        self.schedule_fn = schedule_fn
         self.add_positions = add_positions
     
     def __call__(self, x):
         tvals = np.random.uniform(0, 1, size=x.shape[0])
-        gammas = self.noise_schedule(tvals)[:, np.newaxis, np.newaxis]
+        gammas = self.schedule_fn(tvals)[:, np.newaxis, np.newaxis]
         
         noise_direction = np.random.normal(size=x.shape)
         x_crpt = np.sqrt(gammas)*x + np.sqrt(1-gammas)*noise_direction
@@ -167,14 +167,14 @@ class BinaryDiffusion(object):
     def __init__(
         self,
         n_bits,
-        noise_schedule,
+        schedule_fn,
         add_positions=True,
     ):
-        #if n_bits >= 32:
-        #    raise NotImplementedError("")
+        if n_bits >= 32:
+            raise NotImplementedError("")
         
         self.n_bits = n_bits
-        self.noise_schedule = noise_schedule
+        self.schedule_fn = schedule_fn
         self.add_positions = add_positions
         
     def __call__(
@@ -184,7 +184,7 @@ class BinaryDiffusion(object):
         tvals = np.random.uniform(0, 1, size=x.shape[0])
         
         #gamma represents the variance share of the uncorrupted data
-        gammas = self.noise_schedule(tvals)
+        gammas = self.schedule_fn(tvals)
         
         #allow this fraction of noise through
         corrupt_fracs = np.sqrt(1.0-gammas)[:, np.newaxis, np.newaxis]
@@ -344,3 +344,92 @@ class BlockCoder(object):
             block_shift += coder.code_bits
         
         return np.ravel_multi_index(block_msgs, dims=self.index_shape)
+
+
+def ddim_update(
+    x_t,
+    x_pred,
+    gamma_now,
+    gamma_next,
+):  
+    eps = (1.0/np.sqrt(1-gamma_now))*(x_t - np.sqrt(gamma_now)*x_pred)
+    x_next = np.sqrt(gamma_next)*x_pred + np.sqrt(1.0-gamma_next)*eps
+    return x_next
+
+def ddpm_update(
+    x_t,
+    x_pred,
+    gamma_now,
+    gamma_next,
+):
+    alpha_now = gamma_now/gamma_next#gamma(t_now)/gamma(t_next)
+    sigma_now = np.sqrt(1-alpha_now)
+    z  = np.random.normal(size=x_t.shape)
+    
+    eps = (1.0/np.sqrt(1-gamma_now))*(x_t - np.sqrt(gamma_now)*x_pred)
+    x_next = (1.0/np.sqrt(alpha_now))*(x_t - (1-alpha_now)/(np.sqrt(1-gamma_now))*eps) + sigma_now*z
+    return x_next
+
+def generate_continuous(
+    noise,
+    model,
+    schedule_fn,
+    n_steps=100,
+    condition=None,
+    condition_mask_fn=np.isnan,
+    rel_td=0.02,
+    input_signature="x",
+    output_signature="y,n",
+    estimate="x-n",
+    update_fn=ddpm_update,
+    return_trajectory=False,
+):          
+    x_t = noise
+    if not condition is None:
+        x_t = np.where(condition_mask_fn(x_t), x_t, condition)
+    
+    if return_trajectory:
+        trajectory = [x_t]
+    
+    td = rel_td*n_steps
+    for step_idx in range(n_steps):
+        t_now = 1-step/n_steps
+        t_next = max(1-(step+1+td)/n_steps, 0)
+        
+        gamma_now = schedule_fn(t_now)
+        gamma_next = schedule_fn(t_next)
+        
+        if input_signature == "x":
+            model_out = model.predict(x_t, verbose=False)
+        else:
+            raise ValueError("unknown input signature")
+        
+        if output_signature == "y,n":
+            pred_denoise, pred_noise = model_out
+        elif output_signature == "y":
+            pred_denoise = model_out
+        elif output_signature == "n":
+            pred_noise = model_out
+        else:
+            raise ValueError("unknown output signature")
+        
+        if estimate == "x-n":
+            x_pred = x_t - pred_noise
+        elif estimate == "y":
+            x_pred = pred_denoise
+        else:
+            raise ValueError("unknown estimate method")
+        
+        x_t = update_fn(x_t, x_pred, gamma_now, gamma_next)
+        
+        if return_trajectory:
+            trajectory.append(x_t)
+    
+    if not condition is None:
+        #enforce the condition one more time after the generation process
+        x_t = np.where(condition_mask_fn(x_t), x_t, condition)
+    
+    if return_trajectory:
+        return x_t, trajectory
+    
+    return x_t
