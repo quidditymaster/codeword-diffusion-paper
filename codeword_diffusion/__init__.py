@@ -1,4 +1,3 @@
-
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -7,6 +6,8 @@ from sklearn.neighbors import NearestNeighbors
 
 import tensorflow as tf
 import tensorflow.keras.layers as L
+
+from .datasets import *
 
 _tf_int_dtype = tf.int32
 _np_int_dtype = np.int32
@@ -74,6 +75,15 @@ class CircularBitshiftEmbedding(L.Layer):
         return self.concat_l(vecs)
 
 
+def cos_squared_schedule(
+    t, 
+    Tmax=1.0,
+    ns=2e-4, 
+    ds=2.5e-4,
+):
+    rt = t/Tmax
+    return np.cos(((rt+ns)/(1+ds))*np.pi/2)**2
+
 def int2bits(x, n_bits, dtype=_tf_int_dtype):
     x = tf.bitwise.right_shift(tf.expand_dims(x, -1), tf.cast(tf.range(n_bits), dtype))
     x = tf.math.mod(x, 2)
@@ -85,21 +95,6 @@ def bits2int(x, dtype=_tf_int_dtype):
     x = tf.math.reduce_sum(x*(2**tf.cast(tf.range(n), dtype=dtype)), -1)
     return x
 
-
-class DummySequenceData(object):
-    
-    def __init__(
-        self,
-        lmax,
-        vmax,
-    ):
-        self.lmax = lmax
-        self.vmax = vmax
-    
-    def get_batch(self, batch_size):
-        x = np.random.randint(self.vmax, size=(batch_size, self.lmax,))
-        x = x.astype(np.uint32)
-        return x
 
 class AnalogBitsTransform(object):
     
@@ -131,7 +126,7 @@ class GaussianDiffusion(object):
     ):
         self.schedule_fn = schedule_fn
         self.add_positions = add_positions
-    
+
     def __call__(self, x):
         tvals = np.random.uniform(0, 1, size=x.shape[0])
         gammas = self.schedule_fn(tvals)[:, np.newaxis, np.newaxis]
@@ -147,7 +142,7 @@ class GaussianDiffusion(object):
         if self.add_positions:
             positions = np.repeat(np.arange(x.shape[1])[np.newaxis], x.shape[0], axis=0)
             xvals.append(positions)
-        
+
         return xvals, yvals
 
 
@@ -159,7 +154,7 @@ def gen_random_bitmask(
 ):
     as_bits = np.random.random(size=list(x.shape)+[n_bits]) < hot_fraction
     as_pwrs = as_bits*2**np.arange(n_bits)
-    as_ints = np.sum(as_pwrs, axis=-1)
+    as_ints = np.sum(as_pwrs, axis=-1).astype(x.dtype)
     return as_ints
 
 class BinaryDiffusion(object):
@@ -169,6 +164,7 @@ class BinaryDiffusion(object):
         n_bits,
         schedule_fn,
         add_positions=True,
+        y_as_bits=True,
     ):
         if n_bits >= 32:
             raise NotImplementedError("")
@@ -176,6 +172,7 @@ class BinaryDiffusion(object):
         self.n_bits = n_bits
         self.schedule_fn = schedule_fn
         self.add_positions = add_positions
+        self.y_as_bits = y_as_bits
         
     def __call__(
         self,
@@ -193,7 +190,7 @@ class BinaryDiffusion(object):
             x,
             hot_fraction=corrupt_fracs,
             n_bits=self.n_bits
-        )
+        ).astype(x.dtype)
         
         #generate some random bitnoise
         unfiltered_noise = np.random.randint(2**self.n_bits, size=x.shape, dtype=x.dtype)
@@ -207,6 +204,9 @@ class BinaryDiffusion(object):
         if self.add_positions:
             positions = np.repeat(np.arange(x.shape[1])[np.newaxis], x.shape[0], axis=0)
             xvals.append(positions)
+        
+        if self.y_as_bits:
+            yvals = [int2bits(yv, self.n_bits) for yv in yvals]
         
         return xvals, yvals
         
@@ -370,21 +370,72 @@ def ddpm_update(
     x_next = (1.0/np.sqrt(alpha_now))*(x_t - (1-alpha_now)/(np.sqrt(1-gamma_now))*eps) + sigma_now*z
     return x_next
 
-def generate_continuous(
-    noise,
+
+def linear_gated_xor_update(
+    x_t,
+    x_pred,
+    gamma_now,
+    gamma_next,
+    n_bits,
+):
+    bmask = gen_random_bitmask(
+        x_t, 
+        hot_fraction=gamma_now,
+        n_bits=n_bits,
+    )
+
+    full_noise = np.bitwise_xor(x_t, x_pred)
+    masked_noise = np.bitwise_and(full_noise, bmask)
+
+    x_next = np.bitwise_xor(
+        x_t,
+        masked_noise,
+    )
+
+    return x_next
+
+def sqrt_gated_xor_update(
+    x_t,
+    x_pred,
+    gamma_now,
+    gamma_next,
+    n_bits,
+):
+    bmask = gen_random_bitmask(
+        x_t, 
+        hot_fraction=np.sqrt(gamma_now),
+        n_bits=n_bits,
+    )
+
+    full_noise = np.bitwise_xor(x_t, x_pred)
+    masked_noise = np.bitwise_and(full_noise, bmask)
+
+    x_next = np.bitwise_xor(
+        x_t,
+        masked_noise,
+    )
+
+    return x_next
+
+def sigmoid(logit):
+    return 1.0/(1.0 + np.exp(-logit))
+
+def generate_samples(
+    seed_noise,
     model,
     schedule_fn,
+    update_fn,
     n_steps=100,
     condition=None,
     condition_mask_fn=np.isnan,
     rel_td=0.02,
     input_signature="x",
     output_signature="y,n",
+    model_output_type="continuous",
     estimate="x-n",
-    update_fn=ddpm_update,
     return_trajectory=False,
 ):          
-    x_t = noise
+    x_t = seed_noise
     if not condition is None:
         x_t = np.where(condition_mask_fn(x_t), x_t, condition)
     
@@ -393,30 +444,64 @@ def generate_continuous(
     
     td = rel_td*n_steps
     for step_idx in range(n_steps):
-        t_now = 1-step/n_steps
-        t_next = max(1-(step+1+td)/n_steps, 0)
+        t_now = 1-step_idx/n_steps
+        t_next = max(1-(step_idx+1+td)/n_steps, 0)
         
         gamma_now = schedule_fn(t_now)
         gamma_next = schedule_fn(t_next)
         
+        x_inputs = []
         if input_signature == "x":
-            model_out = model.predict(x_t, verbose=False)
+            x_inputs = x_t
+        elif input_signature == "x,p":
+            pos = np.ones(x_t.shape[:2], dtype=np.int32)*np.arange(x_t.shape[1])[np.newaxis, :]
+            x_inputs = [x_t, pos]
         else:
             raise ValueError("unknown input signature")
+
+        model_out = model.predict(x_inputs, verbose=False)
         
+        pred_y, pred_noise = None, None 
         if output_signature == "y,n":
-            pred_denoise, pred_noise = model_out
+            pred_y, pred_noise = model_out
         elif output_signature == "y":
-            pred_denoise = model_out
+            pred_y = model_out
         elif output_signature == "n":
             pred_noise = model_out
         else:
             raise ValueError("unknown output signature")
         
+        if model_output_type == "continuous":
+            continue #shouldn't need to do anything
+        elif model_output_type == "bit-probability":
+            if not pred_y is None:
+                pred_y = bits2int(
+                    np.random.random(pred_y.shape) < pred_y,
+                    dtype=x_t.dtype,
+                ).numpy()
+            if not pred_noise is None:
+                pred_noise = bits2int(
+                    np.random.random(pred_noise.shape) < pred_noise,
+                    dtype=x_t.dtype,
+                ).numpy()
+        elif model_output_type == "bit-logit":
+            if not pred_y is None:
+                pred_y = bits2int(
+                    np.random.random(pred_y.shape) < sigmoid(pred_y),
+                    dtype=x_t.dtype,
+                ).numpy()
+            if not pred_noise is None:
+                pred_noise = bits2int(
+                    np.random.random(pred_noise.shape) < sigmoid(pred_noise),
+                    dtype=x_t.dtype,
+                ).numpy()
+        else:
+            raise ValueError("unknown model_output_type")
+
         if estimate == "x-n":
             x_pred = x_t - pred_noise
         elif estimate == "y":
-            x_pred = pred_denoise
+            x_pred = pred_y
         else:
             raise ValueError("unknown estimate method")
         
