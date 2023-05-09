@@ -1,4 +1,21 @@
+
 import numpy as np 
+import pandas as pd
+
+def text2uint8(
+    text,
+):
+    "transform text to a numpy array with uint8 dtype using UTF-8 encoding"
+    b = bytes(text, encoding='utf8')
+    return np.frombuffer(b, dtype=np.uint8)
+
+
+def text2ordinals(
+    text,
+    dtype=np.int32,
+):
+    "transform text to a numpy"
+    return np.array([ord(ch) for ch in text]).astype(dtype)
 
 
 class PermutationSampler(object):
@@ -34,7 +51,6 @@ class ChainedTransforms(object):
         self, 
         transforms,
     ):
-        self.data = data
         self.transforms = transforms        
     
     def __call__(self, batch):
