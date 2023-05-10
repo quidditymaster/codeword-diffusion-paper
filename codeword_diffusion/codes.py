@@ -3,15 +3,13 @@ import numpy as np
 import itertools
 
 from sklearn.neighbors import NearestNeighbors
-
-
-from . import int2bits, bits2int
+import codeword_diffusion as cdm
 
 
 def gen_random_codebook(
     n_codewords, 
     n_bits,
-    dtype=_np_int_dtype,
+    dtype=np.int32,
 ):
     max_codes = 2**n_bits
     assert max_codes >= n_codewords
@@ -52,9 +50,7 @@ def gen_hamming_codebook(
     
     n_checks = int(np.floor(np.log2(n_bits)))
     k = n_bits-n_checks-1
-    
-    #import pdb; pdb.set_trace()
-    
+        
     messages = np.arange(2**k).astype(np.int32)
     mbits = cdm.int2bits(messages, n_bits=k)
     address_bits = cdm.int2bits(
@@ -92,12 +88,12 @@ def gen_hamming_codebook(
 def make_corrector_lookup(
     codewords, 
     n_bits,
-    dtype=_np_int_dtype,
+    dtype=np.int32,
 ):
-    code_bits = int2bits(codewords, n_bits=n_bits).numpy()
+    code_bits = cdm.int2bits(codewords, n_bits=n_bits).numpy()
     
     all_msgs = np.arange(2**n_bits).astype(dtype)
-    all_msgs_bits = int2bits(all_msgs, n_bits=n_bits).numpy()
+    all_msgs_bits = cdm.int2bits(all_msgs, n_bits=n_bits).numpy()
 
     nnsearcher = NearestNeighbors().fit(code_bits)
     n_search = min(len(codewords), n_bits+1)
