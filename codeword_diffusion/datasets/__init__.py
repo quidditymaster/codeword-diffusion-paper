@@ -17,6 +17,11 @@ def text2ordinals(
     "transform text to a numpy"
     return np.array([ord(ch) for ch in text]).astype(dtype)
 
+def ordinals2text(
+    ordinals
+):
+    return "".join([chr(ordinal) for ordinal in ordinals])
+
 
 class PermutationSampler(object):
     

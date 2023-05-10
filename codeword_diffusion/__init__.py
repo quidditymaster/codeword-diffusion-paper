@@ -2,12 +2,11 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 
-from sklearn.neighbors import NearestNeighbors
-
 import tensorflow as tf
 import tensorflow.keras.layers as L
 
 from .datasets import *
+from .codes import *
 
 _tf_int_dtype = tf.int32
 _np_int_dtype = np.int32
@@ -210,54 +209,6 @@ class BinaryDiffusion(object):
         
         return xvals, yvals
         
-
-def gen_random_codewords(
-    n_codewords, 
-    n_bits,
-    dtype=_np_int_dtype,
-):
-    max_codes = 2**n_bits
-    assert max_codes >= n_codewords
-    if n_codewords > max_codes/8:
-        codes = np.random.permutation(max_codes)[:n_codewords]
-    else:
-        codes = np.unique(np.random.randint(max_codes, size=n_codewords))
-        while len(codes) < n_codewords:
-            codes = np.unique(np.hstack([
-                codes,
-                np.random.randint(
-                    max_codes, 
-                    size=n_codewords-len(codes)
-                ),
-            ]))
-    
-    return codes.astype(dtype)
-
-def make_corrector_lookup(
-    codewords, 
-    n_bits,
-    dtype=_np_int_dtype,
-):
-    code_bits = int2bits(codewords, n_bits=n_bits).numpy()
-    
-    all_msgs = np.arange(2**n_bits).astype(dtype)
-    all_msgs_bits = int2bits(all_msgs, n_bits=n_bits).numpy()
-
-    nnsearcher = NearestNeighbors().fit(code_bits)
-    self_dists, _ = nnsearcher.kneighbors(code_bits, n_neighbors=2)
-    
-    dists, neighbor_indexes = nnsearcher.kneighbors(all_msgs_bits, n_neighbors=2)
-    corrector_lookup = codewords[neighbor_indexes[:, 0]]
-    
-    info = dict(
-        dists=dists,
-        neighbor_indexes=neighbor_indexes,
-        nnsearcher=nnsearcher,
-        self_dists=self_dists,
-    )
-    
-    return corrector_lookup, info
-
 
 class LookupBinaryCoder(object):
     
