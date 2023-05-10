@@ -253,7 +253,7 @@ def build_model(
         x_in = L.Input([Lmax, bit_width])
         x = L.Dense(d_model)(x_in)
 
-    x_l0 = x
+    xl0 = x
     
     pos_in = L.Input([Lmax], dtype=tf.int32)
     pos_emb = L.Embedding(Lmax, d_model)(pos_in)
@@ -261,7 +261,7 @@ def build_model(
     x = x+pos_emb
 
     for i in range(n_levels):
-        x = bft.EncoderBlock(
+        x = EncoderBlock(
             d_model=d_model,
             d_squeeze=d_squeeze,
             num_heads=num_heads,
