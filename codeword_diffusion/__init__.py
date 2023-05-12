@@ -162,8 +162,10 @@ class BinaryDiffusion(object):
         self,
         n_bits,
         schedule_fn,
+        mask_value=-1,
         add_positions=True,
         y_as_bits=True,
+        return_attention_mask=True,
     ):
         if n_bits >= 32:
             raise NotImplementedError("")
@@ -172,6 +174,8 @@ class BinaryDiffusion(object):
         self.schedule_fn = schedule_fn
         self.add_positions = add_positions
         self.y_as_bits = y_as_bits
+        self.mask_value=mask_value
+        self.return_attention_mask = return_attention_mask
         
     def __call__(
         self,
@@ -183,7 +187,7 @@ class BinaryDiffusion(object):
         gammas = self.schedule_fn(tvals)
         
         #allow this fraction of noise through
-        corrupt_fracs = np.sqrt(1.0-gammas)[:, np.newaxis, np.newaxis]
+        corrupt_fracs = np.sqrt(1-gammas)[:, np.newaxis, np.newaxis]
         
         corruptable_mask = gen_random_bitmask(
             x,
@@ -195,11 +199,18 @@ class BinaryDiffusion(object):
         unfiltered_noise = np.random.randint(2**self.n_bits, size=x.shape, dtype=x.dtype)
         filtered_noise = np.bitwise_and(corruptable_mask, unfiltered_noise)
         
+        #put in a masking value for the noise too
+        if not self.mask_value is None:
+            #in this context x is the original input which is also the prediction target
+            good_vals_ind = x!=self.mask_value
+            filtered_noise = np.where(good_vals_ind, filtered_noise, self.mask_value)
+
         noisy_x = np.bitwise_xor(x, filtered_noise)
         
         xvals = [noisy_x, tvals]
         yvals = [x, filtered_noise]
         
+
         if self.add_positions:
             positions = np.repeat(np.arange(x.shape[1])[np.newaxis], x.shape[0], axis=0)
             xvals.append(positions)
@@ -207,6 +218,10 @@ class BinaryDiffusion(object):
         if self.y_as_bits:
             yvals = [int2bits(yv, self.n_bits) for yv in yvals]
         
+        if self.return_attention_mask:
+            att_mask = np.expand_dims(good_vals_ind, -1)*np.expand_dims(good_vals_ind, -2)
+            return xvals, yvals, att_mask
+
         return xvals, yvals
         
 
@@ -388,7 +403,8 @@ def generate_samples(
 ):          
     x_t = seed_noise
     if not condition is None:
-        x_t = np.where(condition_mask_fn(x_t), x_t, condition)
+        cmask = condition_mask_fn(condition)
+        x_t = np.where(cmask, x_t, condition)
     
     if return_trajectory:
         trajectory = [x_t]
@@ -407,6 +423,12 @@ def generate_samples(
         elif input_signature == "x,p":
             pos = np.ones(x_t.shape[:2], dtype=np.int32)*np.arange(x_t.shape[1])[np.newaxis, :]
             x_inputs = [x_t, pos]
+        elif input_signature == "x,p,m":
+            pos = np.ones(x_t.shape[:2], dtype=np.int32)*np.arange(x_t.shape[1])[np.newaxis, :]
+            mask = np.ones(
+                [x_t.shape[0], x_t.shape[1], x_t.shape[1]]
+            )
+            x_inputs = [x_t, pos, mask]
         else:
             raise ValueError("unknown input signature")
 
