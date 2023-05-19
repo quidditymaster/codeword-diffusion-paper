@@ -37,10 +37,11 @@ class PermutationSampler(object):
         lb = self._pos
         ub = lb+batch_size
         batch_i = self.permuted[lb:ub]
+        self._pos = ub
         if ub >= len(self.indexes):
             self.refresh_permutation()
         if len(batch_i) < batch_size:
-            batch_i = np.stack(
+            batch_i = np.concatenate(
                 [
                     batch_i,
                     self.get_batch(batch_size-len(batch_i))
