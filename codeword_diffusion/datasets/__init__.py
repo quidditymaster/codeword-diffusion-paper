@@ -30,21 +30,24 @@ class PermutationSampler(object):
         self.refresh_permutation()
         
     def refresh_permutation(self):
+        print('new data epoch')
         self._pos = 0
         self.permuted = self.indexes[np.random.permutation(len(self.indexes))]  
     
     def get_batch(self, batch_size):
         lb = self._pos
         ub = lb+batch_size
+        self._pos = ub 
         batch_i = self.permuted[lb:ub]
         self._pos = ub
         if ub >= len(self.indexes):
             self.refresh_permutation()
         if len(batch_i) < batch_size:
+            top_up = self.get_batch(batch_size-len(batch_i))
             batch_i = np.concatenate(
                 [
                     batch_i,
-                    self.get_batch(batch_size-len(batch_i))
+                    top_up,
                 ],
                 axis=0,
             )

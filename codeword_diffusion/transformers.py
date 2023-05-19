@@ -7,6 +7,8 @@ import numpy as np
 import tensorflow as tf 
 import tensorflow.keras.layers as L
 
+import codeword_diffusion as cdm
+
 #resources
 #https://www.tensorflow.org/text/tutorials/transformer
 
@@ -43,12 +45,13 @@ class GlobalSelfAttention(BaseAttention):
         super().__init__(**kwargs)
         self.alpha = alpha
 
-    def call(self, x):
+    def call(self, x, attention_mask=None):
         nx = self.norm_x(x)
         att_out = self.mha(
             query=x, #could also normalize here 
             value=nx,
             key=nx,
+            attention_mask=attention_mask,
         )
         if not self.alpha is None:
             alpha = self.alpha
@@ -76,14 +79,14 @@ class FeedForward(L.Layer):
         self, 
         d_model,
         d_squeeze, 
-        dropout=-1,
+        dropout=None,
         alpha=None,
     ):
         super().__init__()
         self.dmid = L.Dense(d_squeeze, activation='relu')
         self.dout = L.Dense(d_model)
         self.dropout = None
-        if dropout > 0:
+        if not dropout is None:
             self.dropout = L.Dropout(dropout)
         self.norm_l = L.LayerNormalization()
         self.alpha = alpha
@@ -92,9 +95,9 @@ class FeedForward(L.Layer):
         x_in = x
         x = self.norm_l(x)
         x = self.dmid(x)
+        x = self.dout(x)
         if not self.dropout is None:
             x = self.dropout(x)
-        x = self.dout(x)
         if not self.alpha is None:
             alpha = self.alpha
             x = alpha*x_in + (1-alpha)*x
@@ -108,26 +111,28 @@ class EncoderBlock(L.Layer):
     def __init__(
         self, 
         d_model, 
-        num_heads, 
         d_squeeze, 
-        dropout=-1,
+        num_heads, 
+        mha_dropout=None,
+        ff_dropout=None,
         alpha=None,
     ):
         super().__init__()
         self.satt = GlobalSelfAttention(
             num_heads=num_heads,
             key_dim=d_model,
+            dropout=mha_dropout,
             alpha=alpha,
         )
         self.ffn = FeedForward(
             d_model=d_model, 
             d_squeeze=d_squeeze, 
-            dropout=dropout,
+            dropout=ff_dropout,
             alpha=alpha,
         )
 
-    def call(self, x):
-        x = self.satt(x)
+    def call(self, x, attention_mask=None):
+        x = self.satt(x, attention_mask=attention_mask)
         x = self.ffn(x)
         return x
 
@@ -139,7 +144,7 @@ class KeySeparatedPositionEncoderBlock(L.Layer):
         d_model, 
         num_heads, 
         d_squeeze, 
-        dropout=-1
+        dropout=None,
     ):
         super().__init__()
         self.mha = L.MultiHeadAttention()
@@ -237,21 +242,37 @@ class PrecomputedPositionEmbedding(L.Layer):
 def build_model(
     Lmax, 
     bit_width,
+    input_signature="x,p",
     input_type="int",
+    embedding_type="lookup",
+    cbe_kwargs=None,
+    noise_dim=128,
     d_model=32,
     d_squeeze=64,
     num_heads=4,
     n_levels=4,
-    dropout=-1.0,
+    mha_dropout=0.1,
+    ff_dropout=0.1,
+    mix_alpha=None,
     pred_activation=None,
     noise_activation=None,
 ):  
     if input_type == "int":
         x_in = L.Input([Lmax], dtype=tf.int32)
-        x = L.Embedding(2**bit_width, d_model)(x_in)
+        if embedding_type == "lookup":
+            x = L.Embedding(2**bit_width, d_model)(x_in)
+        elif embedding_type == "circular-bitshift":
+            cbe = cdm.CircularBitshiftEmbedding(**cbe_kwargs)
+            x = cbe(x_in)
+            x = L.Dense(d_model, activation=None)(x)
+        else:
+            raise ValueError("uknown embedding type")
     elif input_type == "float":
         x_in = L.Input([Lmax, bit_width])
         x = L.Dense(d_model)(x_in)
+
+    if "m" in input_signature:
+        mask_in = L.Input([Lmax, Lmax])
 
     xl0 = x
     
@@ -265,17 +286,19 @@ def build_model(
             d_model=d_model,
             d_squeeze=d_squeeze,
             num_heads=num_heads,
-            dropout=-1,#0.1,
-            alpha=0.8,
-        )(x)
+            ff_dropout=ff_dropout,
+            mha_dropout=mha_dropout,
+            alpha=mix_alpha,
+        )(x, attention_mask=mask_in)
     
     x_pred = L.Dense(bit_width, activation=pred_activation)(x)
 
-    x = L.Dense(d_model, L.concatenate([x_pred, xl0, x]), activation=None)
-    x = EncoderBlock(d_model=d_model, d_squeeze=d_squeeze, num_heads=num_heads, alpha=0.3)
+    x = L.Dense(noise_dim, activation="relu")(L.concatenate([x_pred, xl0, x]))
+    x = L.Dense(noise_dim, activation="relu")(x)
 
     x_noise = L.Dense(bit_width, activation=noise_activation)(x)
 
-    model = tf.keras.models.Model([x_in, pos_in], [x_pred, x_noise])
+    if "m" in input_signature:
+        model = tf.keras.models.Model([x_in, pos_in, mask_in], [x_pred, x_noise])
     
     return model
