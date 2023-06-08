@@ -165,7 +165,7 @@ class BinaryDiffusion(object):
         mask_value=-1,
         add_positions=True,
         y_as_bits=True,
-        return_attention_mask=True,
+        return_attention_mask=False,
     ):
         if n_bits >= 32:
             raise NotImplementedError("")
