@@ -13,7 +13,7 @@ def count_logic_violations(
     board,
 ):    
     runique = [len(np.unique(v)) for v in board.reshape((9, 9))]
-    cunique = [len(np.unique(v)) for v in board.transpose().reshape((9, 9))]
+    cunique = [len(np.unique(v)) for v in board.reshape((9, 9)).transpose()]
     bunique = [len(np.unique(v)) for v in board[_boxperm].reshape((9, 9))]
     
     col_violations = 81-np.sum(runique)
@@ -31,3 +31,4 @@ def count_vocabulary_violations(
 def violation_score(board):
     vvs = count_vocabulary_violations
     lvs = sum(count_logic_violations(board_ints))
+
