@@ -48,7 +48,7 @@ class GlobalSelfAttention(BaseAttention):
     def call(self, x, attention_mask=None):
         nx = self.norm_x(x)
         att_out = self.mha(
-            query=x, #could also normalize here 
+            query=nx,
             value=nx,
             key=nx,
             attention_mask=attention_mask,
@@ -65,7 +65,7 @@ class CausalSelfAttention(BaseAttention):
     def call(self, x):
         nx = self.norm_x(x)
         att_out = self.mha(
-            query=x,
+            query=nx,
             value=nx,
             key=nx,
             use_causal_mask=True,
