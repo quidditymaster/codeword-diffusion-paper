@@ -28,7 +28,12 @@ class PermutationSampler(object):
     def __init__(self, indexes):
         self.indexes = np.asarray(indexes)
         self.refresh_permutation()
-        
+        self.N = len(indexes)
+
+    @property
+    def epoch(self):
+        return self._pos/self.N
+    
     def refresh_permutation(self):
         print('new data epoch')
         self._pos = 0
