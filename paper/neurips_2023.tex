@@ -58,17 +58,22 @@
 
 
 \begin{abstract}
-Diffusion probabilistic models (DPMs) are a class of generative model which work by learning to reverse a gradual data corruption process, called a diffusion process by analogy with physical diffusion processes.
-Applying DPMs to the generation of discrete or symbolic data, such as text, requires defining a diffusion process over the discrete data domain, either by defining discrete transition probabilities between symbols or by mapping the data onto a continuous representation and applying a continuous diffusion process. 
-This work describes an approach which keeps the intermediate data representation fully discrete but allows for a more gradual, diffusion like, data corruption process than is possible using transitions between observable symbols.
-The method is dubbed codeword diffusion because it combines  diffusion probabilistic models with a channel coding transformation in which input symbols are transformed to specially selected codewords.
-Although error correcting codes may be employed for the codewords, selected codes need not be error correcting nor even error detecting in order to yield enhanced discrete diffusion model performance. 
+Diffusion based generative models have recently shown state of the art performance in generation tasks for many different kinds of data but show the best performance for data that naturally admit a continuous representation, such as images. 
+For fully discrete data such as text fully auto-regressive modeling approaches often out perform diffusion models.
+One possible source of this performance disparity is that perturbations to discrete data must themselves be fundamentally discrete when transforming one symbol into another most or all of the information carried by that symbol will be destroyed all at once. 
+This work explores a fully discrete diffusion method in which instead of fully transforming symbols into one another the information in each symbol may be gradually eroded. 
+This is accomplished by first transforming each symbol into a binary codeword and then applying a discrete diffusion process. Because most binary patterns are not valid codewords the diffusion process can take many steps before transforming the representation for each symbol into a valid representation for another.
 \end{abstract}
 
 
 \section{Introduction}
 
-The current state of the art generative models for discrete data, such as text, are autoregressive models which generate serialized representations of the objects generated one symbol at a time conditioned on previously generated symbols. This approach works well for generating naturally sequential and discrete data, such as text. But because the model must be rerun to generate each token individually generating very long sequences can become computationally burdensome. Likewise if the data to be generated is non-sequential or continuous in nature, such as is the case with images, then the strictly sequential generation ordering of autoregressive models may become problematic. Autoregressive models generating high quality quality samples from such domains usually employ specialized sub-model to reversibly transform between the image domain and a consistently serialized sequence of discrete symbols \citep{ramesh2021, lee2022} . 
+Diffusion based models offer several potential advantages over auto-regressive generative models for discrete sequence generation, the minimum number of required model evaluations to generate a sample is not constrained by the length of the sample and sample quality can be traded for faster generation by adapting the generative denoising schedule.
+
+The current state of the art generative models for discrete data, such as text, are auto-regressive models which generate serialized representations of the objects generated one symbol at a time conditioned on previously generated symbols. 
+However not all discrete sequence data would be most naturally predicted in the order in which it is presented. 
+As an illustrative example it is much easier to predict that 
+%Auto-regressive models generating high quality quality samples from such domains usually employ specialized sub-model to reversibly transform between the image domain and a consistently serialized sequence of discrete symbols \citep{ramesh2021, lee2022} . 
 
 A much more natural fit for the generation of non-sequential and continuous data are diffusion probabilistic models \cite{sohl-dickstein15}.
 Diffusion based models have recently achieved state of the art performance in image generation \citep{ho2020, song2021, saharia2022, ramesh2022}. 
@@ -78,57 +83,216 @@ The progressive updating of diffusion models allows for more natural handling of
 This ability of diffusion models to make progressive updates is also very attractive with respect to textual generation or other forms of discrete data. For example consider a text generation system trained on two different sorts of text. Both texts describe the moves in a Chess game. One text has a header which lists the total number of moves in the game at the very beginning and the other file is identical but lists the number of moves at the end. Diffusion like models would have the same amount of difficulty in generating either game format, since it is equally easy to communicate information forward or backward within the textual sequence.
 Whereas these two different formats present a very different kind of challenge to a fully autoregressive model. If the game length is presented at the end then the autoregressive model can learn to predict a plausible sequence of moves and count them up at the end (or rather predict the text of the move count conditioned on the game). This seems like a relatively natural way to go about generating believable samples of chess games. But if the number of moves is instead at the beginning of the text then the system must not only predict a sequence of plausible moves but must also condition those moves such that checkmate is achieved in precisely the right number of steps. In other words the system must effectively already have an idea of how the game is going to ultimately play out before the first move is even made. 
 
-For a human it would seem that the task 'play a realistic game of chess and then count the number of moves' is a much easier task than 'play a realistic game of chess consisting of exactly N moves'. So we might expect that an autoregressive model would have a much harder time with the format in which game length is specified first than when it is specified at the end. However it could easily be the case that the additional conditioning information could very well yield superior apparent sample quality, especially when the number of available training examples becomes very large.
-% analogously to how image label conditioning tends to improve the quality of generated images.   
+%For a human it would seem that the task 'play a game of chess and then count the number of moves' is a much easier task than 'play a game of chess consisting of exactly N moves'. So we might expect that an autoregressive model would have a much harder time with the format in which game length is specified first than when it is specified at the end. However it could easily be the case that the additional conditioning information could very well yield superior apparent sample quality, especially when the number of available training examples becomes very large.
+%A situation analogous to how label conditioning tends to improve the quality of generated images.   
 However we should be wary of the implicit biases of models which can, metaphorically speaking, only think in a straight line. For example a decision transformer \cite{chen2021decision} pre-trained on text where the number of moves in the game is at the beginning would implicitly sometimes be conditioned to attempt to lose the game instead of win depending on whether or not the initially generated number of moves was even or odd.
 
 Additionally codeword based diffusion models may provide a superior way to deal with categorical predictions over extremely large vocabularies. Dense prediction heads with softmax activations become very costly in terms of numbers of parameters, amount of computation, and memory as the size of the target vocabulary increases. Categorical prediction can be done much more parameter and compute efficiently by instead predicting the digits of the binary expansion of the category index. However the interpretation of all of the bits relies on the values of the ones that came before in the index. Better predictive performance can be gotten by hierarchically predicting each bit conditioned on the previously predicted bits. In practice instead of predicting all the way down at the level of bits it is useful to make predictions over hierarchical word clusters \cite{pmlr-vR5-morin05a}. The cluster hierarchy however is likely to be somewhat arbitrary and managing this hierarchy adds significant additional code and model structure complexity. 
 
-In codeword diffusion large vocabularies can be represented using only a logarithmic number of bits plus some small encoding overhead. Because the diffusion updates are intended to be run over several iterations any hierarchy of dependencies between bits may be learned without the need for any explicit hierarchy to be hardcoded into the model. Thus we can achieve the parsimony of hierarchical encoding schemes without requiring explicit management of these hierarchies with a lessened risk of poor inductive biases caused by bad hierarchy choices. 
+In codeword diffusion large vocabularies can be represented using only a logarithmic number of bits plus some small encoding overhead. Because the diffusion updates are intended to be run over several iterations complex interactions between the encoding bits may be learned without the need for any explicit hierarchy to be hardcoded into the model. Thus we can achieve the parsimony of hierarchical encoding schemes without requiring explicit management of these hierarchies. 
 
 \section{Method}
 
-\subsection{Notation}
-In this paper $x$ will be used to denote data drawn from an appropriate target natural data distribution denoted by $q(x)$.
-Where appropriate $q(x | )$ will also denote the 
-The action of a stochastically applying a noising diffusion process for $t$ time steps 
+In generative modeling the goal is to utilize samples from a data distribution $p_{\rm data}(x)$ to learn a distribution which well approximates the data distribution and that admits a known sampling method.
+In generative diffusion models a forward diffusion process is first defined which progressively injects noise into an initially valid data point until the end result is essentially all noise. 
+Once the forward diffusion process is defined sample trajectories can be drawn from it and models can be then be trained to predict the pattern of noise present in a partially noised training sample.  
+If successful then repeatedly subtracting off a portion of the noise predicted by the model will yield a sequence of points which will tend towards the data distribution. 
 
-superscript $x^t$ and the absence of a superscript is to be interpreted as being the same as the use of a superscript equal to 0. $q(x^{t} | x^{t-1})$ seeded with initial data $x^{0}$ drawn from a natural data distribution $q(x^{0})$. The superscripts indicate either a continuous or discrete time index ranging from 0 to $T$. A time value of 0 may be indicated by the absence of a superscript $x = x^{0}$.  
-When necessary subscripts may be added to indicate a particular sample identifier, sub-sequence index, and bit index or channel dimension index with subscripts appearing in that order.  So for example $x^{t}_{i,j}$ would represent the value contained at the $j$th position of a sequence generated after $t$ steps of a diffusion process applied to data example $i$. If the data type of the sequence was vector valued then $x_{i,j}$ would represent a vector and $x_{i,j,k}$ would represent the value in the $k$th entry of that vector. If $x$ is integer valued then $x_{i,j,k}$ is understood to represent the 
+\subsection{Forward Replacement Diffusion Process}
+
+Let $x_{j,k}(t)$ denote the value at time $t$ of a sequence of bit vectors with sequence index $j$ and bit index $k$. 
+When the sequence index and bit vector index are omitted operations are to be assumed to be applied element wise over the sequence and bit dimensions.
+%When convenient $x_j(t)$ will be treated as equivalent to the integer whose binary expansion it corresponds to.
+
+We define a forward diffusion process for $x(t)$ in terms of replacement events that can happen at continuously valued times.
+Ordinarily gradual noise based diffusion processes are thought of in terms of small additive perturbations the effect of which accumulate over time.
+In the case of binary valued data the addition of additive noise amounts to selecting a subset of bits whose values are to be flipped. 
+It may therefore seem most natural to define the forward diffusion process in terms of random bit flips, however this makes the distribution of the data at any time $t$ dependent on the entire history of bit flips up to that point which unnecessarily complicates the statistical analysis of the process. 
+Since perturbations to individual bits cannot be gradual it is unnecessary to think of the noise perturbations in terms of additive noise, instead we choose to model the process in terms of progressive random replacement events. 
+In a replacement event where the value of a selected bit is replaced by a value randomly drawn from a binary valued noise distribution.
+The replacement noise distribution will be denoted $\eta$ and unless otherwise noted $\eta \sim {\rm Bernoulli}(0.5)$.
+It is important to note that, under this definition, it is possible for a replacement event to take place without the value of that bit being changed, and so replacement events sometimes corrupt the value selected bit but they can take place without any observable effect. 
+But from a statistical perspective the distribution of a bit after a replacement event can be taken to be completely independent of the distribution of any other bit values and this is true even if the replacement event had no observable effect on the data. 
+
+For training purposes it is useful to be able to draw samples from the distribution over $x(t)$ at any time $t$ conditioned on the value at $x(0)$ without needing to run a simulation of the diffusion process forward in time. 
+Because the replacement noise distribution is taken to be constant over time the distribution over replaced values remains stationary at $\eta$ for any number of replacements 1 or greater.
+Therefore to draw a sample from the diffusion process at time $t$ one can first draw a replacement noise value for every bit from the replacement distribution $\eta$.
+Then one simply selects bits either from $x(0)$ or the samples from $\eta$ with a probability equal to the probability that at least one replacement event will have taken place by time $t$. 
+
+If successive corruption events are assumed to be independent of each other and occur with a rate $\beta(t)$ then the distribution of replacement events to have occurred in a time interval $(t_1, t_2)$ will be Poisson distributed with a mean given by the integral of the replacement rate $\beta(t)$.
+The probability for a count of exactly 0 to be drawn from a Poisson distributed variable with mean $\mu$ is given by $e^{-\mu}$. 
+Using this we can calculate the cumulative probability of one or more replacement events by time $t$ as given by equation \ref{totrepfrac} and the probability of one or more replacement events occurring in the interval $(t-\Delta, t)$ via equation \ref{fdeltadef}.
+
+
+\begin{equation}\label{totrepfrac}
+  f_c(t) = 1 - exp \left(- \int_{0}^{t} \beta(t) dt \right)
+\end{equation}
+
+\begin{equation}\label{fdeltadef}
+  f_\Delta(t) = 1 - exp \left( - \int_{t-\Delta}^t \beta(t) dt  \right)
+\end{equation}
+
+
+\subsection{Discretized Reverse Process}
+
+Consider a discretized version of the reverse process beginning with a noise sample $x(T)$ and then repeatedly attempting to sample from the approximate distribution over points a short duration $\Delta$ earlier in time $p(x(t-\Delta) | x(t))$.
+Denote the change between the value at the beginning and end of this interval as $\delta x_{j,k}(t) = x(t) \oplus x(t-\Delta)$.
+If $\delta x(t)$ were known then $x(t-\Delta)$ can be obtained as $x(t-Delta) = x(t) \oplus \delta x(t) $.
+Therefore if we had access to a good estimate of the conditional distribution over incremental changes $p(\delta x_{j,k} | x(t), t)$ then we can generate samples for $x(0)$ by repeatedly sampling from the conditional distribution over recent bit flips and then applying them as updates to the current sample. 
+
+To evaluate this conditional distribution first note that $\epsilon(t-\Delta) \oplus \epsilon(t) = x(t-\Delta) \oplus x(t)$.
+For any time $t$, $\epsilon_{j,k}(t) = 1$ if and only if there has been at least one replacement event for that bit and the most recently drawn replacement value did not match the original bit value. 
+For the particular choice of replacement distribution $\nu \sim {\rm Bernoulli(0.5)}$ the chance of a match or mismatch is always 1/2 regardless of the distribution of bit values being matched, therefore $p(\epsilon_{j,k}(t) = 0) = f_c(t)/2$ and by similar reasoning $p(\epsilon_{j,k}(t-\Delta) \neq \epsilon_{j,k}(t)) = f_\Delta(t)/2$.
+These probabilities can be used to calculate the probability mass which flows from both possible states for $\epsilon_{j,k}(t-\Delta)$ into both possible states of $\epsilon_{j,k}(t)$. 
+We can use these probabilities to calculate the rate at which each bit would have been flipped in a forward process during the interval $(t-\Delta, t)$ given the current value of $\epsilon_{j,k}$.
+For example the probability of a recent bit flip conditioned on the bit in question currently being corrupted can be calculated as such; 
+$p(\epsilon_{j,k}(t-\Delta) = 0 | \epsilon_{j,k}=1) 
+= p(\epsilon_{j,k}(t-\Delta) = 0, \epsilon_{j,k}=1)/p(\epsilon_{j,k}(t)=1) 
+= (1-f_c(t-\Delta)/2)*f_\Delta(t)/2/((1-f_c(t-\Delta)/2)*f_\Delta(t)/2 + (1-f_\Delta(t)/2)*f_c(t-\Delta)/2)$
+
+The true value of $\epsilon_{j,k}(t)$ will not be known during the application of a reverse update process, but we can use a learned model to estimate the probability distribution $p(\epsilon_{j,k}(t) | x(t))$ noise values conditioned on the current observed $x(t)$ and then flip each bit at a rate which is the probability weighted sum of the bit flip rates which would have occurred in the case of each condition. 
+The results of constructing a reverse process in this way are detailed in equations \ref{denoisetarget} through \ref{c1mimic}. 
+
+\begin{equation}\label{denoisetarget}
+  f_\theta(x(t), t) \approx p(\epsilon_{j,k}(t)~|~x(t), t) = p(x(t) \xor x(0)~|~x(t), t)
+\end{equation}
+
+\begin{equation}\label{updatedistrib}
+  \delta x_{j,k}(x(t), t) \sim {\rm Bernoulli( 
+    r(t)*\left( 
+    c_0(t) + (c_1(t)-c_0(t))*f_\theta(x(t), t)  
+    \right)
+  }
+\end{equation}
+
+\begin{equation}\label{applyupdate}
+  x(t-\Delta) = x(t) \oplus \delta x_{j,k}(x(t))
+\end{equation}
+
+\begin{equation}\label{rfdelt}
+  r(t) = f_\Delta(t)
+\end{equation}
+\begin{equation}\label{c0mimic}
+  c_0(t) = \frac{f_c(t-\Delta)}{(f_\Delta(t)*f_c(t-\Delta) + (2-f_\Delta(t))*(2-f_c(t-\Delta)))}
+\end{equation}
+\begin{equation}\label{c1mimic}
+  c_1(t) = \frac{(2-f_c(t-\Delta))}{(2-f_c(t-\Delta))*f_\Delta(t) + (2-f_\Delta(t)*f_c(t-\Delta))}
+\end{equation}
+
+Note that in this analysis the probability of each bit flip in the reverse process is being sampled independently of all other bit flips that may occur within a given reverse time step which may not be a valid approximation when the bit values are strongly interdependent.
+This limitation can be overcome from a theoretical perspective by picking extremely small time steps such that there will be either 0 or 1 bit flip over the whole sample in which case this reverse sampling process effectively becomes gibbs sampling with the conditional distribution for each bit being sampled one at a time in random order. 
+Smaller time steps may be necessary to precisely match the distributions of reverse and forward trajectories but in practice it is less important that the reverse generated trajectories be indistinguishable from forward trajectories and more important that the distribution over $x(0)$ be similar in both cases.
+
+
+In general there is no strong reason to suppose that the best schedule for sample generation using the reverse process will also correspond to the parameters used for generating training data from the forward process. 
+The parameterization of the update distribution defined in equation \ref{updatedistrib} has been chosen in order to allow for intuitive control of reverse processes to facilitate tuning for achieving good empirical performance for particular models and data distributions. Intuitively $r(t)$ controls the average rate of allowed bit flips, $c_0(t)$ controls how often to flip bits that might already be correct and $c_1(t)$ controls how often to correct bits that might be currently incorrect. 
+For example a reasonable generating schedule might be $c_0(t)=0$ $c_1(t)=1$ and $r(t) = k*T/\Delta$ which would simply flip each bit proportional to its current probability of corruption with each bit being selected to have its value updated an average of $k$ times. 
+
+
+%Unlike for the forward process the bit values become increasingly statistically dependent on each other over time instead of vice versa. 
+
+
+\subsection{Binary Codeword Mapping}
+
+One of the most common ways to represent discrete objects for generative modeling is to represent them as a sequence of symbols from a known vocabulary, or equivalently as a sequence of categorical variables
+Usually for implementation purposes these symbols or categories are finally mapped to sequence of integers representing the index of the relevant symbol or category in some list.
+For example it has become standard to begin textual modeling by partitioning the text into short substrings, called tokens, which can be mapped onto integers representing the index in the vocabulary of each token. 
+Other kinds of discrete data is often subjected to a similar kind of transformation process. A user session on a website could be be represented by a sequence of document ids(usually remapped to be dense within a fixed range of indexes, similar to the tokenization indexing transform). 
+An episode in a reinforcement learning problem may be chosen to be represented as a sequence of integers representing unique states and actions. 
+Even data which is not typically thought of as being discrete is easily represented this way, for example although image data is usually modeled as 2D or 3D arrays of floats one could also in principle choose to model an image as a sequence of integers, either the raw pixel values in the range 0 to 255 or as the byte sequence of some appropriate serialization format such as .png, .bmp, etc. 
+
+In order to represent a sequence of symbol indexes $s_{j}$ as a sequence of binary bit vectors $x_{j,k}$ in preparation of training a binary diffusion model one fairly straight forward way to proceed would be to convert each integer $s_{j}$ into its corresponding binary expansion. 
+Such an approach can work but this representation has the disadvantage that the mapping from symbols to bit representations will be dense meaning that flipping just one bit in the representation will in general change the bit representation to another valid bit pattern corresponding to a completely different symbol.
+This means that even "small" perturbations in terms of bits will completely change the apparent symbol being represented. 
+Such relationships between symbols is unlikely to act as an inductive bias when the bit patterns being used are simply the index of the symbol in an arbitrarily ordered list. 
+
+In order to make it possible to consider the flipping of single bits as a small perturbation when seen from the perspective of the space of associated symbols we propose the idea to first remap the symbol indexes to a selected set of bit patterns (or equivalently a special set of integers) such that several bits in the corresponding pattern could be corrupted without also landing on a bit pattern which is allocated to any other valid symbol. 
+Such a set of bit patterns is sometimes referred to as a binary code and a member of that set is called a codeword. 
+In traditional applications, such as error correction, binary codes are often required to have the property that the minimum hamming distance between valid codewords should be large. 
+In this work, in principle, any mapping from symbols to unique positive integers can in principle be used as the codeword map, though efficient decoding may not be possible for arbitrary random codes.
+Though, a powerful model should in principle also be able to guide the binary representations to eventually consist purely of valid symbol codes so a traditional error correcting decoder is potentially unnecessary. 
+
+The minimum number of bits required to represent the symbol indexes as positive integers will be referred to as the symbol bitwidth and the minimum number of bits required to represent the codewords will be referred to as the codeword bitwidth.
+
+
+\section{Experiments}
+
+We consider model performance on a range of different tasks all of which utilize the same basic form.
+Each task consists of; a dataset of target sample objects, a method to turn a sampled object into a sequential symbolic representation of a definite form called a task surface, a method for generating a mask which indicates which symbols in the task surface are to be admitted as context during the generation process, and some number of metrics which can be used to gauge task performance as a function of generated task surfaces.
+
+Each task has performance evaluated on baseline approaches and variants of codeword diffusion. All approaches utilize the same basic model architecture and have their performance compared after the same number of updates performed on the same number of total basic symbols.
+At training time a batch of training data is generated as a set of constant length sequences which consist of the concatenation of task surfaces separated by a special indicator which augments the basic symbol vocabulary used by the task. 
+
+The chosen tasks have been designed such that most task documents are small relative to the total sequence length used for training. 
+
+
+
+At training time an object is sampled from the training dataset and then transformed into its corresponding task document and mask. A  
+
+
+Consider a dataset with objects of the form \{"x":1, "y":1, "operation":"+", "result":2\} which could be used to create multiple different tasks depending on the chosen sequence representation and mask. For example a task 
+
+
+ consisting of samples which will be referred to as objects. 
+For each task 
+
 
 \subsection{Diffusion Models} 
 
-Diffusion probabilistic models \citep{sohl-dickstein15} attempt to create models which slowly change pure noise samples into samples which approximate those drawn from a target distribution. This differs from GANs or VAEs which attempt to learn to turn noise into data samples in a single pass. Designing a process which iteratively turns noise into samples from a target distribution may be hard. Diffusion models leverage the fact that processes which go the other way and which turn data samples into pure noise are very easy to design. One simply progressively injects noise into samples drawn from the target distribution. 
+The task of generative modeling is to use a given set of samples drawn from an unknown target distribution to generate new samples that could plausibly have been drawn from the target distribution. The dominant modern generative model approaches 
 
-The diffusion process starts by sampling a point $x^0$ from the target distribution $q(x^0)$ and at each time step a new sample $x^{t+1}$ is drawn from a distribution conditioned on the previous point in the sequence $q(x^{t+1} | q^{t}, \beta(t))$ where $\beta(t)$ is a parameter controlling how much noise is injected at each diffusion step (for example the variance of a Gaussian noise distribution, or the bit flip rate of a binomial distribution).
+Diffusion probabilistic models \citep{sohl-dickstein15} attempt to slowly change pure noise samples into samples which approximate those drawn from a target distribution. This differs from GANs or VAEs which attempt to learn to turn noise into data samples directly in a single pass. Turning samples from a noise distribution into samples from a target distribution may be very hard. Diffusion models leverage the fact that processes which go the other way and turn data samples into pure noise are very easy to design. For diffusion probabilistic models the noise 
 
-Diffusion models work by learning to mimic drawing samples from the distribution of the reverse process $q(x^{t-1} | x^t, \beta(t)) \approx f_\theta(x^t)$. The function $f_\theta$ may be parameterized in any convenient manner and is typically a deep neural network trained via gradient descent. Pairs of samples $x^{t}$ and $x^{t+1}$ can be easily drawn from the forward diffusion process and then used to train $f_\theta(x^t)$ to learn the approximate mean of the reverse diffusion step.
+The diffusion process starts by sampling a point $x^0$ from the target distribution $q(x^0)$ and at each time step a new sample $x^{t+1}$ is drawn from a distribution conditioned on the previous point in the sequence $q(x^{t+1} | x^{t}, \beta(t))$.
+ where $\beta(t)$ is a parameter controlling how much noise is injected. 
+For example in a continuous diffusion processes $\beta(t)$ may represent the variance of the Gaussian noise which is to be added to $x^t$. For a discrete distribution $\beta(t)$ could represent the probability of some discrete change, like a bit flip or a transition between discrete categories. 
+In the limit of many transitions $T$ the ultimate distribution $q(x^T)$ can be made to approximate some desired simple known distribution. 
+For example in the case of additive Gaussian noise the central limit theorem ensures eventual convergence of $x^t$ to a Gaussian distribution.   
 
-Although this approach of using adjacent samples to create training targets can work, the network learns to mimic a distribution of updates drawn from a slow and meandering diffusion process. So, if the reverse process faithfully copies the distribution of the forward process, will also be slow and meandering. 
-An excellent solution to this difficulty is to directly sample from the posterior of the process \cite{ho2020, song2021} in which it was realized that instead of training on pairs $x^{t-1}$, $x^{t}$ it is possible to train on pairs $x^{0}$, $x^{t}$. For certain choices of diffusion noise distribution it is possible to directly sample from the conditional distribution $p(x^t | x^0)$ without needing to carry out the intermediate diffusion steps.
+Diffusion models work by attempting to approximate the distribution of a reverse process $q(x^{t-1} | x^t, \beta(t)) \approx f_\theta(x^t)$.
+The function $f_\theta$ may be parameterized in any convenient manner and is typically a deep neural network trained via gradient descent. 
+Pairs of samples $x^{t}$ and $x^{t+1}$ can be easily drawn from the forward diffusion process and then used as training data to optimize the parameters $\theta$.
 
+Rather than attempting to predict only the incremental change $x^{t-1}$ from $x^t$ one can build models to predict either the fully denoised sample $x^0$ or the full noise vector $\epsilon^t = x^t - x^0$. Such models can still be used to generate incremental reverse trajectories which are optima of an analogous variational objective as that proposed in the original probabilistic diffusion approach \cite{ho2020, song2021}. 
 
-where it was realized that for certain choices of diffusive noise distributions it is possible to directly calculate the distribution of $x^t$ corresponding to a particular initial point $x^0$ for any time $t$ without actually carrying out the intermediate diffusion process steps. Using this distribution one can calculate the approximate distribution of $x^{t-1}$ conditioned on $x^t$
+%For certain choices of diffusion noise distribution it is possible to directly sample from the conditional distribution $p(x^t | x^0)$ without needing to carry out the intermediate diffusion steps which can greatly increase the efficiency of training sample generation.
 
-in some situations drawing samples from the entire diffusion process is unnecessary drawing just a single sample $x^t$ from a diffusion path each time can yield superior training data. For sufficiently simple diffusion processes it becomes possible to calculate the distribution of the diffusion process for any time step $t$ given any initial sample $x^0$. 
+\subsection{Binary Code Diffusion}
 
-An excellent solution to this problem, is to instead learn from samples drawn from probability distributions conditioned on both the current data diffusion trajectory sample $x^t$ as well as the initial data sample that acted as the seed for that trajectory $x^0$. 
+The symbol indexes are often the direct objects of the modeling process, both for input and for sample generation. The present work adds one additional layer of transformation in which the symbol indexes are transformed into code words. The transformation into code words serves an analogous purpose in binary code diffusion models as a one hot encoding transform might serve in a more traditional categorical prediction model.
 
+Depending on the context it may be simpler to think of the code words either as integer values or in terms of the binary expansion of those integers. For example a simple one hot encoding can be thought of in terms of code words as being either binary strings with exactly a single non-zero entry or equivalently in terms of integers of the form $2^m$. 
+A more information dense code could be achieved by taking the sets of binary strings with at most two ones or the integers of the form $2^m + 2^n$. A one hot encoding with 1,000 bits could be replaced by such an encoding with just 45 bits. 
+A very information dense encoding can be achieved by simply letting the symbol indexes be equal to their code word representations, encoding a vocabulary of 1,000 symbols this way requires only $log_2(1000) \approx 10$ bits. 
 
-\begin{equation}\label{marginal_q}
-  q(x^{(t-1)}|x^{(t)}) = \int q(x^{(t)} | x^{(t-1)}) p(^{(t-1)}) dx^{(t-1)}
-\end{equation}
+The diffusion process then proceeds by randomly corrupting bits in the encoded representation of the data until most or all bits have been replaced by random noise. In normal usage the terms "flipped bit" and "corrupted bit" would usually have the same meaning as each other. However in this work a corruption event need not necessarily flip the value of the corrupted bit. A corruption event simply replaces the current value of a bit with a new randomly generated value, which may or may not correspond to the original bit value. Formulated this way corruption events completely destroy the dependency of bit values on previous 
 
-\subsection{Binary Codeword Diffusion}
+The codes which correspond to the one hot encoding would yield generative models which are very similar to the typical method of predicting likelihoods per category.
+Usually this is the final step in most data preprocessing pipelines. The present work adds one additional optional step in which the 
 
-Binary codeword diffusion models (BCDMs) are discrete probabilistic diffusion models in which the diffusion process corrupts bits in a binary representation of discrete data in a manner similar to the binomial diffusion of \cite{sohl-dickstein15}. However, the input data is not assumed to initially consist of binary or binomial basic variables. Instead the basic symbols of an input sequence are first mapped one-to-one onto a chosen set of encoding integers, called codewords. 
-Because the symbol to codeword transformation is treated as a preprocessing step for the purposes of the diffusion model we will denote the codeword transformed inputs by $x$ and when necessary we will denote the raw input symbols indexes by $u$. Note that in general there will be no simple relationship between the bits of $x$ and the bits of $u$ and the number of bits used to encode $x^t_{i,j}$ will usually be larger than the number of bits used to encode the symbol indexes $u_{i,j}$.
+symbols from a fixed vocabulary. Once the  and the tokens are then mapped to integers which index into the vocabulary. The present work adds one additional step in which the symbol indexes are transformed into code words. The code words can also be thought of as being integers within some fixed range but the set of valid code words may be strategically chosen to be very small compared to. 
+
+in which the symbol indexes are further transformed into specially chosen integers 
+
+For the purposes of this work it is helpful to partition the sample generating process into three different components, denoising, decoding, and deserialization. For this work only the denoising component of the generator is trained, the decoding and deserialization 
+
+The code words are then corrupted by randomly replacing the values of bits with randomly selected values. 
+
+In contrast to the usual case of affairs in generative modeling. 
+ a binary representation. The present work mostly focuses on models where both the data and the diffusion process are discrete, though one can apply a continuous diffusion process to originally discrete binary data as is done in /citet{chen2023analog}.
+
+In contrast to most generative modeling processes the raw data is not originally 
+The input data is not assumed to initially consist of binary or binomial basic variables, instead the basic symbols of an input sequence are first mapped one-to-one onto a chosen set of encoding integers, called codewords. 
+To differentiate codeword transformed inputs by $x$ and when necessary we will denote the raw input symbols indexes by $u$. 
+Ca
+Call the total number of bits which are necessary to represent the raw integers $u$ the bit width of the data and the number of bits required to represent the codes in the codebook the bit width of the code. The code bit width must always be at least equal to the data bit width 
+Note that in general there will be no simple relationship between the bits of $x$ and the bits of $u$ and the number of bits used to encode $x^t_{i,j}$ must be larger than or equal to the number of bits used to encode the symbol indexes $u_{i,j}$.
 
 \subsubsection{Codeword Selection}
 
-The choice of mapping of symbol to codewords may be arbitrary, subject only to the constraint that each unique input symbol is mapped to a unique codeword. An algorithmic decoder which inverts this process and turns arbitrary messages back into valid code words is not strictly necessary, since a well trained diffusion model should do this automatically as part of the generation process. However the use of a decoding scheme for the chosen codeword transformation may improve predictive performance in practice. 
+The choice of mapping of symbol to codewords may be arbitrary, subject only to the constraint that each unique input symbol is mapped to a unique codeword. An algorithmic decoder which inverts this process and turns arbitrary messages back into valid code words is not strictly necessary, since a well trained diffusion model should do this automatically as part of the generation process, though such a decoding scheme to ensure the final bit patterns are always valid codewords can only improve performance. 
 
-We call the total number of bits which are necessary to represent the codes in the codebook the total bit width of the code. 
+
 For implementation purposes we will explore only codes for which the total required encoding bits can be represented by a int32. Furthermore for ease of implementation the sign bit has been left unused in the experiments in this paper and so we consider only codes of total bit width 31 and less. 
 
 For this work codes with a relatively small number of bits are chosen by simply randomly generating a small lookup table, called the codebook, of unique integers less than $2^k$. Mapping to codewords is done by indexing into the codeword table and decoding is done by indexing into a lookup table which enumerates the nearest codeword for every integer less than $2^k$. This technique allows easy experimentation with any choice of codebook without requiring a known algorithmic decoder. This technique works well for codes with a small number of bits but is burdensome when dealing with codes with millions of possible codewords. For this purpose when dealing with a large input vocabulary a compound block code is generated. To encode each input symbol index is first split into a multi-index with sub indexes within the range of the number of codewords used to encode each block. These sub indexes are then encoded and the binary representations of the resulting codewords concatenated. Decoding is done by decoding each block of bits to get the relevant sub indexes and then recombining them into the flat input symbol index. 
@@ -151,11 +315,12 @@ Once a sample $x^t \sim q(x^t | x^0, t)$ has been drawn the target corruption no
   \epsilon^t = x^0 \xor x^t
 \end{equation}
 
-Either of $\epsilon^t$ or $x^0$ may then be used as a prediction target for a denoising model.
 
 \subsubsection{Denoising Model}
 
-A denoising model $f(x^t, t, \theta)$ can be trained using samples of ($x^t$, $\epsilon^t$). The specific meaning of the approximation in equation \ref{denoiseapprox} can be made explicit by a choice of loss function to minimize, for this work we use binary cross entropy. 
+Either of $\epsilon^t$ or $x^0$ or both may then be used as a prediction target for training a denoising model $f(x^t, t, \theta)$. Unlike in the continuous case the kind of value output by the denoising model may not be of the same kind as the input $x^t$.  
+In the most common case for this work the input $x^t$ is a sequence of integers and the output of $f$ is a set of bit flip probabilities over the binary representations of those integers, as per equation \ref{denoiseapprox}. 
+
 
 \begin{equation}\label{denoiseapprox}
   f_{i,j,k}(x^t, t, \theta) \approx p(x_{i,j,k}^0 \xor x_{i,j,k}^t) = p(\epsilon_{i,j,k}^t)
@@ -202,7 +367,13 @@ For example consider a situation where the total encoding bit width is $K=5$ and
 
 \subsection{Sudoku}
 
-We create generative models which are trained on a dataset consisting of examples of valid solved sudoku puzzles represented as a collection of human readable texts. 
+Sudoku represents an excellent test case for learning discrete generative models. The relationships between symbols is complex enough to represent a non-trivial learning challenge while also being small enough to admit much more rapid experimentation than is possible with natural language or image data.
+Additionally there is a clear and easily evaluated concept of sample quality, namely whether or not the generated samples follow the rules of sudoku.  
+But the ideal properties of a sudoku grid generative model are easy to determine from theoretical considerations and any given generative model can easily be compared against them with relatively minimal computation. 
+Firstly, the number of rule violations (non unique values in row, column, or 3x3 boxes) should be as low as possible, that is the generated samples should be valid sudoku solution grids. 
+Secondly, each possible valid grid should be generated with roughly equal probability. 
+There are approximately $6.7x10^{21}$ valid solved 9x9 sudoku grids which could be turned into more than $10^{38}$ possible valid puzzles even when restricting consideration only to puzzles with the minimum possible number of clues \cite{mcguire201316clue}. 
+
 We compare the generative performance of an autoregressive transformer, with discrete codeword diffusion, and continuous diffusion on analog bits \cite{chen2023analog}. 
 Sample quality is measured in terms of the number of logical violations of the rules of Sudoku, measured in terms of hte number of non-unique values per row, column, and 3x3 box, as well as vocabulary violations which occur when a symbol outside of the vocabulary "123456789" is generated.
 
@@ -211,22 +382,22 @@ Any good solver requires having complete access to all the known entries before 
 For the diffusion based models solving a puzzle is much easier than generating a puzzle since a valid puzzle prompt cannot have any self inconsistencies in the conditioning values, something that must be achieved by the diffusion model itself in de-novo generation.
 
 
-\begin{table}
-  \caption{Sample table title}
-  %\label{sample-table}
-  \centering
-  \begin{tabular}{lll}
-    \toprule
-    \multicolumn{2}{c}{Part}                   \\
-    \cmidrule(r){1-2}
-    Name     & Description     & Size ($\mu$m) \\
-    \midrule
-    Dendrite & Input terminal  & $\sim$100     \\
-    Axon     & Output terminal & $\sim$10      \\
-    Soma     & Cell body       & up to $10^6$  \\
-    \bottomrule
-  \end{tabular}
-\end{table}
+% \begin{table}
+%   \caption{Sample table title}
+%   %\label{sample-table}
+%   \centering
+%   \begin{tabular}{lll}
+%     \toprule
+%     \multicolumn{2}{c}{Part}                   \\
+%     \cmidrule(r){1-2}
+%     Name     & Description     & Size ($\mu$m) \\
+%     \midrule
+%     Dendrite & Input terminal  & $\sim$100     \\
+%     Axon     & Output terminal & $\sim$10      \\
+%     Soma     & Cell body       & up to $10^6$  \\
+%     \bottomrule
+%   \end{tabular}
+% \end{table}
 
 
 \section{Related Work}
